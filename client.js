@@ -141,7 +141,7 @@ window.__ModuleLoader__.load({
           }, '删除')))
     }
 
-    function EnvList({ envs, lastBuild, draft, onSelect, onCopy, onDelete, onAdd }) {
+    function EnvList({ envs, lastBuild, draft, onSelect, onCopy, onDelete, onAdd, onImport, onExport }) {
       const buckets = new Map()
       const order = []
       const ungrouped = []
@@ -175,6 +175,14 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'dad-left' },
         h('div', { className: 'dad-left-head' },
           h('span', { className: 'dad-left-title' }, '环境'),
+          h('button', {
+            type: 'button', className: 'dad-btn', title: '从 JSON 配置文件导入环境（相同 ID 覆盖本地）',
+            onClick: onImport,
+          }, '导入'),
+          h('button', {
+            type: 'button', className: 'dad-btn', title: '导出全部环境配置为 JSON（含 SSH 密码）',
+            onClick: onExport, disabled: envs.length === 0,
+          }, '导出'),
           h('button', { type: 'button', className: 'dad-btn dad-btn-primary', onClick: onAdd }, '+ 添加环境')),
         h('div', { className: 'dad-envs' },
           envs.length === 0 ? h('div', { className: 'dad-hint' }, '（暂无环境，点击「+ 添加环境」）') : null,
@@ -505,6 +513,8 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = useState(null)
       const [formOpen, setFormOpen] = useState(true)
       const [formMsg, setFormMsg] = useState(null)
+      // 全局提示：导入等不依赖当前选中环境的操作也必须有可见反馈
+      const [notice, setNotice] = useState(null)
 
       const [jdks, setJdks] = useState([])
       const [jdkOpen, setJdkOpen] = useState(false)
@@ -526,6 +536,7 @@ window.__ModuleLoader__.load({
 
       const logRef = useRef(null)
       const esRef = useRef(null)
+      const importRef = useRef(null)
       const dragIdRef = useRef(null)
       const [draggingId, setDraggingId] = useState('')
       const [dragOverId, setDragOverId] = useState('')
@@ -557,6 +568,13 @@ window.__ModuleLoader__.load({
         }).catch((error) => { if (!cancelled) setLoadError(error.message || String(error)) })
         return () => { cancelled = true }
       }, [])
+
+      // 全局提示 6 秒后自动消失
+      useEffect(() => {
+        if (!notice) return undefined
+        const timer = setTimeout(() => setNotice(null), 6000)
+        return () => clearTimeout(timer)
+      }, [notice])
 
       // 组件卸载时断开日志流
       useEffect(() => () => {
@@ -719,6 +737,85 @@ window.__ModuleLoader__.load({
           return
         }
         askDeleteEnv(draft)
+      }
+
+      // ---------- 导入 / 导出配置 ----------
+
+      // 导出当前环境列表（与 envs.json 同构，可直接用于「导入」；含 SSH 密码）
+      function exportConfig() {
+        if (!envs.length) return
+        const d = new Date()
+        const date = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
+        const blob = new Blob([JSON.stringify(envs, null, 2)], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = 'envs-' + date + '.json'
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
+        setNotice({ text: '已导出 ' + envs.length + ' 个环境（含 SSH 密码，请妥善保管）', kind: 'ok' })
+      }
+
+      function openImport() {
+        if (importRef.current) importRef.current.click()
+      }
+      async function importFile(ev) {
+        const input = ev.target
+        const file = input.files && input.files[0]
+        input.value = '' // 允许重复选择同一文件
+        if (!file) return
+        let text
+        try { text = await file.text() } catch {
+          setNotice({ text: '读取文件失败', kind: 'err' })
+          return
+        }
+        // 客户端只预览要覆盖哪些 ID；解析/校验/合并以服务端为准
+        let ids = []
+        try {
+          const data = JSON.parse(text)
+          const list = Array.isArray(data) ? data : (data && Array.isArray(data.envs) ? data.envs : [])
+          ids = list.map((e) => String((e && e.id) || '')).filter(Boolean)
+          if (!ids.length) throw new Error('没有环境（需为环境数组，元素含 id）')
+        } catch (error) {
+          setNotice({ text: '导入失败：' + (error.message || error), kind: 'err' })
+          return
+        }
+        const overwritten = ids.filter((id) => envs.some((e) => e.id === id))
+        setConfirmState({
+          title: '导入配置',
+          body: '将导入 ' + ids.length + ' 个环境：' + ids.join('、') + '。'
+            + (overwritten.length ? '以下 ID 与本地相同，将被导入文件覆盖：' + overwritten.join('、') + '。' : ''),
+          danger: overwritten.length > 0,
+          confirmLabel: '导入',
+          onConfirm: () => doImport(text),
+        })
+      }
+      function doImport(text) {
+        rpc('importEnvs', { content: text }).then((d) => {
+          const next = Array.isArray(d && d.envs) ? d.envs : []
+          const added = Array.isArray(d && d.added) ? d.added : []
+          const overwritten = Array.isArray(d && d.overwritten) ? d.overwritten : []
+          const warning = (d && d.warning) || ''
+          setEnvs(next)
+          setSelected([])
+          const targetId = added[0] || overwritten[0] || ''
+          setDraft((prev) => {
+            const target = next.find((e) => e.id === targetId)
+              || (prev && next.find((e) => e.id === prev.id))
+              || next[0]
+            return target ? normalizeEnv(target) : null
+          })
+          setNotice({
+            text: '已导入 ' + (added.length + overwritten.length) + ' 个环境'
+              + (overwritten.length ? '，覆盖：' + overwritten.join('、') : '')
+              + (warning ? '；' + warning : ''),
+            kind: warning ? 'warn' : 'ok',
+          })
+        }).catch((error) => {
+          setNotice({ text: '导入失败：' + (error.message || error), kind: 'err' })
+        })
       }
 
       function patchEnv(patch) {
@@ -1015,10 +1112,22 @@ window.__ModuleLoader__.load({
 
       return h('div', { className: 'dad-root' },
         h('style', null, CSS),
+        h('input', {
+          type: 'file', accept: '.json,application/json', ref: importRef,
+          style: { display: 'none' }, onChange: importFile,
+        }),
         loadError ? h('div', { className: 'dad-loaderr' }, '配置读取失败：' + loadError) : null,
+        notice ? h('div', { className: 'dad-notice ' + (notice.kind || ''), role: 'status' },
+          h('span', { className: 'dad-notice-text' }, notice.text),
+          h('button', {
+            type: 'button', className: 'dad-notice-close', 'aria-label': '关闭提示',
+            onClick: () => setNotice(null),
+          }, '×')) : null,
         h(EnvList, {
           envs, lastBuild, draft,
           onSelect: selectEnv, onCopy: copyEnv, onDelete: askDeleteEnv, onAdd: addEnv,
+          onImport: openImport,
+          onExport: exportConfig,
         }),
         h('div', { className: 'dad-right' },
           h(EnvForm, {
@@ -1168,6 +1277,13 @@ window.__ModuleLoader__.load({
       '.dad-linkbtn-danger{color:var(--dsw-alias-state-error-primary)}',
       '.dad-right{flex:1 1 auto;min-width:0;min-height:0;overflow:auto;padding:14px 16px 24px;display:flex;flex-direction:column;gap:12px}',
       '.dad-loaderr{flex:none;margin:12px 16px 0;padding:8px 12px;border-radius:var(--dsw-radius-md);border:.5px solid var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary);font-size:12px}',
+      '.dad-notice{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:70;display:flex;align-items:center;gap:10px;max-width:min(640px,80vw);padding:7px 12px;border-radius:var(--dsw-radius-md);border:.5px solid var(--dsw-alias-border-l3);background:var(--dsw-alias-bg-layer-2);box-shadow:var(--dsw-elevation-prominent);font-size:12px;color:var(--dsw-alias-label-primary)}',
+      '.dad-notice.ok{border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary)}',
+      '.dad-notice.err{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}',
+      '.dad-notice.warn{border-color:var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-state-warn-label)}',
+      '.dad-notice-text{min-width:0;overflow-wrap:anywhere}',
+      '.dad-notice-close{border:0;background:none;color:inherit;font-size:14px;line-height:1;padding:0 2px;cursor:pointer;opacity:.7}',
+      '.dad-notice-close:hover{opacity:1}',
       '.dad-card{min-width:0;padding:12px 14px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1)}',
       '.dad-card-head{display:flex;align-items:center;gap:8px;min-width:0;margin-bottom:10px}',
       '.dad-card-title{flex:1;min-width:0;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',

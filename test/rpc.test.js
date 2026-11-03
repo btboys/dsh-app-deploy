@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { promises as fsp } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { initConfig } from '../server/config.js'
+import { initConfig, templateEnv } from '../server/config.js'
 import { initHistory } from '../server/history.js'
 import { handleRpc } from '../server/rpc.js'
 
@@ -11,10 +11,21 @@ const DIR = await fsp.mkdtemp(path.join(tmpdir(), 'dad-rpc-'))
 await initConfig({ dataDir: DIR, defaultProjectPath: '/tmp/project' })
 await initHistory(DIR)
 
-test('RPC 分发：config 返回环境列表与 empty lastBuild', async () => {
+// 测试夹具：新装插件不再播种，环境由用例自己创建
+function makeEnv(id, name) {
+  const env = templateEnv()
+  env.id = id
+  env.name = name
+  env.projectPath = '/tmp/project'
+  env.ssh.host = 'localhost'
+  env.modules = [{ ...env.modules[0], remotePath: '/www' }]
+  return env
+}
+
+test('RPC 分发：config 初始为空列表与 empty lastBuild', async () => {
   const res = await handleRpc({ method: 'config' })
   assert.equal(res.ok, true)
-  assert.equal(res.value.envs.length, 7)
+  assert.deepEqual(res.value.envs, [])
   assert.equal(res.value.defaultProjectPath, '/tmp/project')
   assert.deepEqual(res.value.lastBuild, {})
 })
@@ -35,25 +46,26 @@ test('saveEnv：校验失败返回多条错误用「；」拼接', async () => {
 })
 
 test('saveEnv / frontEnv / deleteEnv 往返', async () => {
-  const cfg = await handleRpc({ method: 'config' })
-  const base = cfg.value.envs.find(e => e.id === 'fxy')
-  const env = { ...base, id: 'tmp-env', name: '临时环境', group: '' }
+  const created = await handleRpc({ method: 'saveEnv', args: makeEnv('fxy', '分析云') })
+  assert.equal(created.ok, true)
+  assert.equal(created.value.envs.length, 1)
+  assert.equal(created.value.warning, '')
 
-  const saved = await handleRpc({ method: 'saveEnv', args: env })
-  assert.equal(saved.ok, true)
-  assert.equal(saved.value.envs.length, 8)
-  assert.equal(saved.value.envs.find(e => e.id === 'tmp-env').name, '临时环境')
-  assert.equal(saved.value.warning, '')
-
-  const withFe = { ...env, modules: env.modules.map(m => m.id === 'bsFront' ? { ...m, frontEnv: 'VITE_API=1' } : m) }
+  const base = created.value.envs[0]
+  const withFe = { ...base, modules: base.modules.map(m => m.id === 'bsFront' ? { ...m, frontEnv: 'VITE_API=1' } : m) }
   assert.equal((await handleRpc({ method: 'saveEnv', args: withFe })).ok, true)
-  assert.deepEqual(await handleRpc({ method: 'frontEnv', args: { env: 'tmp-env', module: 'bsFront' } }), { ok: true, value: { text: 'VITE_API=1' } })
-  assert.deepEqual(await handleRpc({ method: 'frontEnv', args: { env: 'tmp-env', module: 'bsServer' } }), { ok: true, value: { text: '' } })
+  assert.deepEqual(await handleRpc({ method: 'frontEnv', args: { env: 'fxy', module: 'bsFront' } }), { ok: true, value: { text: 'VITE_API=1' } })
+  assert.deepEqual(await handleRpc({ method: 'frontEnv', args: { env: 'fxy', module: 'bsServer' } }), { ok: true, value: { text: '' } })
   assert.equal((await handleRpc({ method: 'frontEnv', args: { env: 'nope', module: 'bsFront' } })).ok, false)
+
+  const saved = await handleRpc({ method: 'saveEnv', args: makeEnv('tmp-env', '临时环境') })
+  assert.equal(saved.ok, true)
+  assert.equal(saved.value.envs.length, 2)
+  assert.equal(saved.value.envs.find(e => e.id === 'tmp-env').name, '临时环境')
 
   const deleted = await handleRpc({ method: 'deleteEnv', args: { id: 'tmp-env' } })
   assert.equal(deleted.ok, true)
-  assert.equal(deleted.value.envs.length, 7)
+  assert.equal(deleted.value.envs.length, 1)
 })
 
 test('git / browse / history / clearHistory 分支', async () => {
@@ -69,4 +81,45 @@ test('git / browse / history / clearHistory 分支', async () => {
 
   assert.deepEqual((await handleRpc({ method: 'history' })).value, [])
   assert.deepEqual(await handleRpc({ method: 'clearHistory' }), { ok: true, value: { ok: true } })
+})
+
+test('importEnvs：同 ID 覆盖本地、新 ID 追加，非法配置整体拒绝', async () => {
+  const cfg = await handleRpc({ method: 'config' })
+  const base = cfg.value.envs.find(e => e.id === 'fxy')
+  const imported = [
+    { ...base, name: '导入覆盖名' },
+    { ...base, id: 'imp-new', name: '导入新增' },
+  ]
+
+  const res = await handleRpc({ method: 'importEnvs', args: { content: JSON.stringify(imported) } })
+  assert.equal(res.ok, true)
+  assert.deepEqual(res.value.overwritten, ['fxy'])
+  assert.deepEqual(res.value.added, ['imp-new'])
+  assert.equal(res.value.envs.length, 2)
+  assert.equal(res.value.envs.find(e => e.id === 'fxy').name, '导入覆盖名')
+  assert.equal(res.value.envs.find(e => e.id === 'fxy').ssh.host, base.ssh.host)
+  assert.equal(res.value.envs.find(e => e.id === 'imp-new').name, '导入新增')
+  // 覆盖不改变原有顺序，新环境追加到末尾
+  assert.deepEqual(res.value.envs.map(e => e.id), ['fxy', 'imp-new'])
+
+  // 兼容 { envs: [...] } 包装
+  const wrapped = await handleRpc({
+    method: 'importEnvs',
+    args: { content: JSON.stringify({ envs: [{ ...base, id: 'imp-wrapped', name: '包装导入' }] }) },
+  })
+  assert.equal(wrapped.ok, true)
+  assert.deepEqual(wrapped.value.added, ['imp-wrapped'])
+
+  // 任一环境非法 → 整体拒绝且不写盘
+  const badBody = JSON.stringify([{ ...base, name: '不该落盘' }, { ...base, id: 'BAD ID' }])
+  const bad = await handleRpc({ method: 'importEnvs', args: { content: badBody } })
+  assert.equal(bad.ok, false)
+  assert.match(bad.error, /ID/)
+  const after = await handleRpc({ method: 'config' })
+  assert.equal(after.value.envs.length, 3)
+  assert.equal(after.value.envs.find(e => e.id === 'fxy').name, '导入覆盖名')
+
+  assert.equal((await handleRpc({ method: 'importEnvs', args: { content: 'not json' } })).ok, false)
+  assert.equal((await handleRpc({ method: 'importEnvs', args: { content: '[]' } })).ok, false)
+  assert.equal((await handleRpc({ method: 'importEnvs', args: {} })).ok, false)
 })

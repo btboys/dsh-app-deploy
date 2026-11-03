@@ -3,11 +3,19 @@ import assert from 'node:assert/strict'
 import { promises as fsp } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { initConfig } from '../server/config.js'
+import { initConfig, templateEnv, normalizeEnv, saveEnvs } from '../server/config.js'
 import { handleDeploy } from '../server/deployment.js'
 
 const DIR = await fsp.mkdtemp(path.join(tmpdir(), 'dad-deploy-'))
 await initConfig({ dataDir: DIR, defaultProjectPath: '/tmp/project' })
+// 测试夹具：新装插件不播种，显式造一个环境供参数校验用例使用
+const fixture = templateEnv()
+fixture.id = 'fxy'
+fixture.name = '分析云'
+fixture.projectPath = '/tmp/project'
+fixture.ssh.host = 'localhost'
+fixture.modules = [{ ...fixture.modules[0], remotePath: '/www' }]
+await saveEnvs([normalizeEnv(fixture)])
 
 function fakeRes() {
   return {

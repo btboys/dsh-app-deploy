@@ -16,7 +16,6 @@
     "index.js",
     "client.js",
     "server",
-    "seed",
     "cordis.patch.yml",
     "locale",
     "icon.svg",

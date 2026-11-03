@@ -9,34 +9,16 @@ async function tempDir() {
   return fsp.mkdtemp(path.join(tmpdir(), 'dad-config-'))
 }
 
-test('envs.json 不存在时用 seed/scripts-extract.json 播种', async () => {
+test('新装插件不播种：envs.json 缺失时初始化为空数组', async () => {
   const dir = await tempDir()
   await initConfig({ dataDir: dir, defaultProjectPath: '/tmp/project' })
 
-  const envs = getEnvs()
-  assert.equal(envs.length, 7)
-  assert.deepEqual(envs.map(e => e.id), ['fxy', 'dyx', 'jh', 'jcd', 'xl', 'xsy', 'yjy'])
-
-  const fxy = envs[0]
-  assert.equal(fxy.group, '官方')
-  assert.equal(fxy.projectPath, '/tmp/project')
-  assert.equal(fxy.ssh.password, '')
-  assert.equal(fxy.ssh.host, '47.99.77.94')
-  assert.equal(fxy.modules.length, 4)
-  assert.deepEqual(fxy.modules.map(m => m.id), ['bsFront', 'bsServer', 'adminFront', 'adminServer'])
-  assert.equal(fxy.modules[0].kind, 'front')
-  assert.equal(fxy.modules[0].name, 'bs 前端')
-  assert.equal(fxy.modules[0].key, 'fxy')
-  assert.equal(fxy.modules[0].localPath, 'client/client-front/dist/fxy/')
-  assert.equal(fxy.modules[1].kind, 'server')
-  // jh 后端 jarLocal 是目录：补尾斜杠保留「复制内容进远程目录」语义
-  assert.equal(envs[2].modules[1].localPath, 'client/client-server/build/libs/')
-
+  assert.deepEqual(getEnvs(), [])
   const written = JSON.parse(await fsp.readFile(path.join(dir, 'envs.json'), 'utf8'))
-  assert.equal(written.length, 7)
+  assert.deepEqual(written, [])
 })
 
-test('旧 schema（script/record）迁移：保留 id/name/note，补齐种子字段并重写文件', async () => {
+test('旧 schema（script/record）迁移：保留 id/name/note，补齐空字段并重写文件', async () => {
   const dir = await tempDir()
   await fsp.writeFile(path.join(dir, 'envs.json'), JSON.stringify([
     { id: 'fxy', name: '分析云旧', note: '旧备注', script: 'update.sh' },
@@ -47,8 +29,9 @@ test('旧 schema（script/record）迁移：保留 id/name/note，补齐种子�
   assert.equal(e.id, 'fxy')
   assert.equal(e.name, '分析云旧')
   assert.equal(e.note, '旧备注')
-  assert.equal(e.group, '官方')
-  assert.equal(e.ssh.host, '47.99.77.94')
+  assert.equal(e.group, '')
+  assert.equal(e.ssh.host, '')
+  assert.equal(e.projectPath, '/tmp/project')
   assert.equal(e.modules.length, 4)
 
   const written = JSON.parse(await fsp.readFile(path.join(dir, 'envs.json'), 'utf8'))
@@ -67,7 +50,7 @@ test('normalizeEnv：record 模块转数组、frontEnv 迁移、-PexpTime 提取
       bsServer: { gradleTask: 'client:client-server:bootJar', extraArgs: '-PexpTime=2026-12-31', localPath: 'j.jar', remotePath: '/r2', healthCheckUrl: ' https://example.com/api/ ' },
     },
   })
-  assert.equal(norm.group, '官方')
+  assert.equal(norm.group, '')
   assert.equal(norm.expTime, '2026-12-31')
   assert.deepEqual(norm.modules.map(m => m.id), ['bsFront', 'bsServer'])
   assert.equal(norm.modules[0].frontEnv, 'A=1')

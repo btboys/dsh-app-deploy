@@ -1,23 +1,15 @@
 import { promises as fsp } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 // ---------- 状态：数据目录由插件 Config/dataDir 决定，initConfig 时绑定 ----------
 let dataDir = ''
 let envsFile = ''
 let defaultProjectPath = ''
 let envs = []
-const seedBases = {}
 
-// 种子数据：随包分发（来自旧项目 scripts-extract.json）
-const SEED_FILE = fileURLToPath(new URL('../seed/scripts-extract.json', import.meta.url))
-
-// 固定 4 个种子模块的显示名与旧 record 键的映射
+// 固定 4 个模块的显示名与旧 record 键的映射
 const MODULE_NAME = { bsFront: 'bs 前端', bsServer: 'bs 服务端', adminFront: 'admin 前端', adminServer: 'admin 服务端' }
 const MODULE_ORDER = ['bsFront', 'bsServer', 'adminFront', 'adminServer']
-
-// 种子分组：fxy=官方，dyx/jh/xsy/yjy=私有化，jcd/xl=OEM
-const GROUP_BY_ID = { fxy: '官方', dyx: '私有化', jh: '私有化', xsy: '私有化', yjy: '私有化', jcd: 'OEM', xl: 'OEM' }
 
 function defaultModules() {
   return [
@@ -32,58 +24,7 @@ function templateEnv() {
   return { id: '', name: '', note: '', group: '', projectPath: defaultProjectPath, jdkHome: '', expTime: '', ssh: { host: '', port: 22, user: 'root', password: '', options: '' }, modules: defaultModules() }
 }
 
-function splitGradle(cmd) {
-  const parts = cmd.trim().split(/\s+/)
-  let key = '', extra = []
-  for (const p of parts.slice(1)) {
-    if (p.startsWith('-Pkey=')) key = p.slice(6)
-    else extra.push(p)
-  }
-  return { task: parts[0], key, extra: extra.join(' ') }
-}
-
-function seedFromExtract(id, name, note, e) {
-  const toMod = (mid, me) => {
-    const g = splitGradle(me.gradleTask)
-    // distDir 部署 dist/<key> 子目录（原脚本源带尾斜杠，复制内容进远程目录，保留此语义）；
-    // jh 后端同步 build/libs 整个目录（原脚本源同样带尾斜杠）
-    const local = me.distDir ? `${me.distDir}/` : me.jarLocal ? (id === 'jh' ? `${me.jarLocal}/` : me.jarLocal) : ''
-    return { id: mid, name: MODULE_NAME[mid] || mid, kind: mid.endsWith('Front') ? 'front' : 'server', enabled: true, gradleTask: g.task, key: g.key, extraArgs: g.extra, localPath: local, remotePath: me.remotePath, postCommand: me.postCommand ?? '', frontEnv: '' }
-  }
-  return {
-    id, name, note, projectPath: defaultProjectPath, jdkHome: e.javaHome,
-    ssh: { host: e.ssh.host, port: e.ssh.port, user: e.ssh.user, password: '', options: '' },
-    modules: [toMod('bsFront', e.bsFront), toMod('bsServer', e.bsServer), toMod('adminFront', e.adminFront), toMod('adminServer', e.adminServer)],
-  }
-}
-
-const DEFAULTS = [
-  ['update.sh', 'fxy', '分析云 (官方)', '主站'],
-  ['update-dyx.sh', 'dyx', '深圳德永信', '私有化'],
-  ['update-jh.sh', 'jh', '金合', ''],
-  ['update-oem-jcd.sh', 'jcd', '金财道 OEM', 'OEM'],
-  ['update-oem-xl.sh', 'xl', '企云乐 OEM', 'OEM'],
-  ['update-xsy.sh', 'xsy', '新世洋', '私有化 / 带过期时间'],
-  ['update-yjy.sh', 'yjy', '有机云', ''],
-]
-
-async function loadSeeds() {
-  let data = {}
-  try { data = JSON.parse(await fsp.readFile(SEED_FILE, 'utf8')) } catch {}
-  for (const k of Object.keys(data)) {
-    const e = data[k]
-    const def = DEFAULTS.find(d => d[0] === e.file)
-    const [id, name, note] = def ? [def[1], def[2], def[3]] : [k, k, '']
-    seedBases[e.file] = seedFromExtract(id, name, note, e)
-  }
-}
-
-function defaultEnvs() {
-  // 播种也走一遍归一化：保证首启返回/写盘即符合契约 schema（group/expTime 等字段齐全）
-  return DEFAULTS.map(([file, id, name, note]) => normalizeEnv({ ...(seedBases[file] || templateEnv()), id, name, note }))
-}
-
-// ---------- 加载 / 迁移 envs.json ----------
+// 把 modules 归一化为数组；record 旧格式自动转数组（id 保持 bsFront 等，name 映射），frontEnv.bs/admin 迁移进对应 front 模块
 function isNewSchema(e) {
   return !!e && typeof e === 'object' && !!e.ssh && typeof e.ssh === 'object'
 }
@@ -130,7 +71,7 @@ function toModArray(mods, fe) {
 function normalizeEnv(e) {
   const env = {
     id: e.id, name: e.name, note: e.note ?? '',
-    group: e.group ?? GROUP_BY_ID[e.id] ?? '',
+    group: e.group ?? '',
     projectPath: e.projectPath || defaultProjectPath,
     jdkHome: e.jdkHome ?? '',
     expTime: e.expTime ?? '',
@@ -154,24 +95,24 @@ function normalizeEnv(e) {
 async function loadEnvs() {
   let raw = null
   try { raw = JSON.parse(await fsp.readFile(envsFile, 'utf8')) } catch {}
-  if (!Array.isArray(raw) || !raw.length) {
-    const defs = defaultEnvs()
-    await fsp.writeFile(envsFile, JSON.stringify(defs, null, 2))
-    return defs
+  // 不播种：文件缺失/损坏时初始化为空配置
+  if (!Array.isArray(raw)) {
+    await fsp.writeFile(envsFile, '[]')
+    return []
   }
   let migrated = false
   const out = []
   for (const e of raw) {
     if (isNewSchema(e)) {
       const r = e
-      if ((!r.group && GROUP_BY_ID[r.id]) || !Array.isArray(r.modules) || r.modules.some(m => m?.extraArgs?.toString().includes('-PexpTime='))) migrated = true
+      if (!Array.isArray(r.modules) || r.modules.some(m => m?.extraArgs?.toString().includes('-PexpTime='))) migrated = true
       out.push(normalizeEnv(r))
       continue
     }
     migrated = true
-    // 旧 schema（{id,name,script,...}）：按 script 播种，保留 id/name/note
+    // 旧 schema（{id,name,script,...}）：保留 id/name/note，其余字段用空模板兜底
     const old = e
-    const base = seedBases[String(old.script || '')] || templateEnv()
+    const base = templateEnv()
     out.push(normalizeEnv({ ...base, id: String(old.id || ''), name: String(old.name || base.name), note: String(old.note ?? base.note ?? '') }))
   }
   if (migrated) await fsp.writeFile(envsFile, JSON.stringify(out, null, 2))
@@ -183,7 +124,6 @@ export async function initConfig({ dataDir: dir, defaultProjectPath: projectPath
   envsFile = dataDir ? path.join(dataDir, 'envs.json') : ''
   defaultProjectPath = projectPath || ''
   if (!envsFile) throw new Error('未配置数据目录')
-  await loadSeeds()
   envs = await loadEnvs()
 }
 
@@ -195,9 +135,6 @@ export async function saveEnvs(next = envs) {
 }
 
 export function getDefaultProjectPath() { return defaultProjectPath }
-
-// 旧 schema 迁移用：按原脚本文件名取种子环境
-export function seedBase(file) { return seedBases[file] || null }
 
 // ---------- 校验 ----------
 const BAD_PATH = /[\s;"'`$&|<>()*?[\]{}!]/ // 禁止空格/引号/; & | ` $ 等
@@ -270,4 +207,4 @@ export function validateEnv(e) {
   return errs
 }
 
-export { MODULE_NAME, MODULE_ORDER, DEFAULTS, templateEnv, isNewSchema, normalizeEnv }
+export { MODULE_NAME, MODULE_ORDER, templateEnv, isNewSchema, normalizeEnv }

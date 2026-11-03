@@ -1,5 +1,5 @@
 import { promises as fsp } from 'node:fs'
-import { getEnvs, saveEnvs, normalizeEnv, isNewSchema, templateEnv, validateEnv, frontEnvFile, getDefaultProjectPath, seedBase } from './config.js'
+import { getEnvs, saveEnvs, normalizeEnv, isNewSchema, templateEnv, validateEnv, frontEnvFile, getDefaultProjectPath } from './config.js'
 import { getHistory, replaceHistory, HIST_LIMIT } from './history.js'
 import { activeRecord } from './deployment.js'
 import { listJdks, listWorktrees, readGitInfo, browseDirectory, which } from './local-tools.js'
@@ -17,7 +17,7 @@ const methods = {
     const env = normalizeEnv(
       isNewSchema(b)
         ? b
-        : { ...(seedBase(String(b.script || '')) || templateEnv()), id: String(b.id || ''), name: String(b.name || ''), note: String(b.note || '') },
+        : { ...templateEnv(), id: String(b.id || ''), name: String(b.name || ''), note: String(b.note || '') },
     )
     const errs = validateEnv(env)
     if (errs.length) throw new Error(errs.join('；'))
@@ -34,6 +34,43 @@ const methods = {
   deleteEnv: async ({ id } = {}) => {
     await saveEnvs(getEnvs().filter(x => x.id !== id))
     return { envs: getEnvs() }
+  },
+  // 配置文件导入：同 ID 覆盖本地，其余追加；任一环境校验失败则整体拒绝（不写盘）
+  importEnvs: async ({ content } = {}) => {
+    if (typeof content !== 'string' || !content.trim()) throw new Error('配置文件内容为空')
+    let data
+    try { data = JSON.parse(content) } catch { throw new Error('文件不是合法的 JSON') }
+    if (data && !Array.isArray(data) && Array.isArray(data.envs)) data = data.envs
+    if (!Array.isArray(data) || !data.length) throw new Error('配置文件中没有环境（应为环境数组）')
+    const envs = getEnvs()
+    const byId = new Map(envs.map(x => [x.id, x]))
+    const order = envs.map(x => x.id)
+    const localIds = new Set(order)
+    const added = []
+    const overwritten = []
+    const errs = []
+    data.forEach((raw, index) => {
+      const b = raw && typeof raw === 'object' ? raw : {}
+      const env = normalizeEnv(
+        isNewSchema(b)
+          ? b
+          : { ...templateEnv(), id: String(b.id || ''), name: String(b.name || ''), note: String(b.note || '') },
+      )
+      const list = validateEnv(env)
+      if (list.length) { errs.push(`环境 ${env.id || '#' + (index + 1)}: ${list.join('；')}`); return }
+      if (!byId.has(env.id)) order.push(env.id)
+      const bucket = localIds.has(env.id) ? overwritten : added
+      if (!bucket.includes(env.id)) bucket.push(env.id)
+      byId.set(env.id, env)
+    })
+    if (errs.length) throw new Error(errs.join('\n'))
+    await saveEnvs(order.map(id => byId.get(id)))
+    const touched = new Set([...added, ...overwritten])
+    let warning = ''
+    if (getEnvs().some(e => touched.has(e.id) && e.ssh.password) && !(await which('sshpass'))) {
+      warning = '已导入，但本机未安装 sshpass，部署时无法使用密码认证。请先执行: brew install hudochenkov/sshpass/sshpass'
+    }
+    return { envs: getEnvs(), added, overwritten, warning }
   },
   frontEnv: async ({ env: envId, module: mid } = {}) => {
     const e = getEnvs().find(x => x.id === envId)

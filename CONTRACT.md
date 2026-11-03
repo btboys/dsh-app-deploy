@@ -40,8 +40,8 @@ dataDir/
   history.json   DeployRecord[]（上限 500 条，超出裁剪最旧）
 ```
 
-- `envs.json` 不存在/为空时，用包内 `seed/scripts-extract.json` 播种（逻辑照抄旧 `config.ts` 的 `loadSeeds/defaultEnvs`）。
-- 旧数据迁移由用户手动 `cp`，插件不做自动迁移。
+- 新装插件不播种：`envs.json` 不存在/损坏时初始化为 `[]`，环境全部由用户新增或「导入」得到。
+- 旧数据迁移由用户手动 `cp` 或面板「导入」，插件不做自动迁移。
 
 ### 2.3 HTTP 接口
 
@@ -57,6 +57,7 @@ dataDir/
 | `config` | – | `{ envs: Env[], defaultProjectPath: string, lastBuild: Record<string, { time: number, status: DeployStatus }> }` |
 | `saveEnv` | `Env` | `{ envs: Env[], warning?: string }`（校验失败 → `ok:false`，error 为多条用「；」拼接） |
 | `deleteEnv` | `{ id: string }` | `{ envs: Env[] }` |
+| `importEnvs` | `{ content: string }`（JSON 文本：`Env[]` 或 `{ envs: Env[] }`） | `{ envs: Env[], added: string[], overwritten: string[], warning?: string }`；同 ID 覆盖本地、其余追加；任一环境校验失败 → `ok:false` 且不写盘 |
 | `frontEnv` | `{ env: string, module: string }` | `{ text: string }`（front 模块 frontEnv 为空时读 `.env` 参考文本，绝不写回） |
 | `jdks` | – | `Array<{ label: string, path: string }>` |
 | `browse` | `{ path?: string, hidden?: boolean }` | `{ path, parent, dirs: string[], worktrees: Worktree[] }`；路径非法/不可读 → `ok:false` |
@@ -174,6 +175,10 @@ window.__ModuleLoader__.load({
    状态显示部署中/完成/失败；日志面板自动滚底；完成后刷新执行记录与最后构建时间。
 7. **执行记录**：当前环境最近 20 条；状态徽标、时间、耗时、模块、失败模块/阶段/exit code；失败记录可展开日志尾部；「清空」。
 8. **frontEnv 初始值**：模块 `frontEnv` 为空且类型 front 时，调用 `frontEnv` RPC 读文件参考文本填入（用户已编辑则不覆盖）。
+9. **配置导入/导出**：环境列表顶部「导入」选择 JSON 文件 → 确认框列出将覆盖的同 ID 环境 → `importEnvs` RPC；
+   成功后用返回的 `envs` 刷新列表并选中导入的环境；失败/校验错误显示在全局提示条。
+   「导出」不发请求，直接用当前 `envs` 生成 `envs-YYYY-MM-DD.json`（与 `envs.json` 同构，含 SSH 密码）触发下载，
+   导出的文件可直接用于「导入」。
 
 ### 3.3 限制
 

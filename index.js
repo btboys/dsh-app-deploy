@@ -59,7 +59,7 @@ function resolveDataDir(config) {
 
 export function apply(ctx, config) {
   const dataDir = resolveDataDir(config)
-  // 延迟初始化：apply 内不 await，首个请求时才读数据目录/播种
+  // 延迟初始化：apply 内不 await，首个请求时才读数据目录/初始化配置
   let ready
   const ensure = () => (ready ??= (async () => {
     await mkdir(dataDir, { recursive: true })
