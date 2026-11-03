@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Deployment panel",
+    "description": "Orchestrate per-environment Gradle builds, rsync syncs and SSH commands with live deploy logs and run history."
+  }
+}

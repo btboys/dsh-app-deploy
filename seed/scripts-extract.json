@@ -1,0 +1,219 @@
+{
+  "fxy": {
+    "file": "update.sh",
+    "javaHome": "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home",
+    "gradleKey": "fxy",
+    "ssh": { "user": "root", "host": "47.99.77.94", "port": 22 },
+    "bsFront": {
+      "gradleTask": "client:client-front:dist -Pkey=fxy",
+      "distDir": "client/client-front/dist/fxy",
+      "remotePath": "/data/wwwroot/f3.fenxi365.com",
+      "postCommand": "sh /data/script/mod.sh financial"
+    },
+    "bsServer": {
+      "gradleTask": "client:client-server:bootJar",
+      "jarLocal": "client/client-server/build/libs/financial-v5.jar",
+      "remotePath": "/data/server/financial/financial-v5.jar",
+      "postCommand": "sh /data/script/update_dockcer.sh financial 9097 financial_client"
+    },
+    "adminFront": {
+      "gradleTask": "admin:admin-front:dist",
+      "distDir": "admin/admin-front/dist",
+      "remotePath": "/data/wwwroot/manage.fenxi365.com",
+      "postCommand": "sh /data/script/mod.sh financial-admin"
+    },
+    "adminServer": {
+      "gradleTask": "admin:admin-server:bootJar",
+      "jarLocal": "admin/admin-server/build/libs/financial-admin-v5.jar",
+      "remotePath": "/data/server/financial-admin/financial-admin-v5.jar",
+      "postCommand": "sh /data/script/update.sh financial-admin 9098"
+    },
+    "quirks": "官方主站。admin 前端编译不带 -Pkey（直接部署 dist 整个目录，非 key 子目录）；bs 前端带 -Pkey=fxy 部署 key 子目录。部署后走 mod.sh/update_dockcer.sh/update.sh 脚本体系，非裸 docker restart。"
+  },
+  "dyx": {
+    "file": "update-dyx.sh",
+    "javaHome": "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home",
+    "gradleKey": "dyx",
+    "ssh": { "user": "ubuntu", "host": "10.126.126.200", "port": 22 },
+    "bsFront": {
+      "gradleTask": "client:client-front:dist -Pkey=dyx",
+      "distDir": "client/client-front/dist/dyx",
+      "remotePath": "/data/financial_app/nginx/wwwroot/client",
+      "postCommand": null
+    },
+    "bsServer": {
+      "gradleTask": "client:client-server:bootJar",
+      "jarLocal": "client/client-server/build/libs/financial-v5.jar",
+      "remotePath": "/data/financial_app/server/financial.jar",
+      "postCommand": "sudo docker restart financial_client"
+    },
+    "adminFront": {
+      "gradleTask": "admin:admin-front:dist -Pkey=dyx",
+      "distDir": "admin/admin-front/dist",
+      "remotePath": "/data/financial_app/nginx/wwwroot/admin",
+      "postCommand": null
+    },
+    "adminServer": {
+      "gradleTask": "admin:admin-server:bootJar",
+      "jarLocal": "admin/admin-server/build/libs/financial-admin-v5.jar",
+      "remotePath": "/data/financial_app/server/financiala.jar",
+      "postCommand": "sudo docker restart financial_admin"
+    },
+    "quirks": "深圳德永信 私有化。bs 与 admin 前端均带 -Pkey（admin 部署 dist 整个目录）。后端用裸 sudo docker restart 重启（非 update_dockcer.sh），且前端部署后无 mod.sh 类 postCommand。ssh 用户为 ubuntu。路径为 /data/financial_app 前缀。"
+  },
+  "jh": {
+    "file": "update-jh.sh",
+    "javaHome": "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home",
+    "gradleKey": "jh",
+    "ssh": { "user": "root", "host": "120.55.54.78", "port": 22 },
+    "bsFront": {
+      "gradleTask": "client:client-front:dist -Pkey=jh",
+      "distDir": "client/client-front/dist/jh",
+      "remotePath": "/data/wwwroot/cw.jhqkg.com",
+      "postCommand": "sh /data/script/mod.sh financial"
+    },
+    "bsServer": {
+      "gradleTask": "client:client-server:bootJar",
+      "jarLocal": "client/client-server/build/libs",
+      "remotePath": "/data/server/financial",
+      "postCommand": "sh /data/script/update_dockcer.sh financial 9097 financial_client"
+    },
+    "adminFront": {
+      "gradleTask": "admin:admin-front:dist",
+      "distDir": "admin/admin-front/dist",
+      "remotePath": "/data/wwwroot/cwht.jhqkg.com",
+      "postCommand": "sh /data/script/mod.sh financial-admin"
+    },
+    "adminServer": {
+      "gradleTask": "admin:admin-server:bootJar",
+      "jarLocal": "admin/admin-server/build/libs",
+      "remotePath": "/data/server/financial-admin",
+      "postCommand": "sh /data/script/update.sh financial-admin 9098"
+    },
+    "quirks": "金合。后端同步的是 build/libs 整个目录而非单个 jar 文件（jarLocal/remotePath 为目录）；bsServer 编译无 || exit 1（失败不中断）；前端无 rm -rf dist 清理。admin 前端不带 -Pkey。走 mod.sh/update_dockcer.sh/update.sh 脚本体系。"
+  },
+  "jcd": {
+    "file": "update-oem-jcd.sh",
+    "javaHome": "/Library/Java/JavaVirtualMachines/jdk-17.0.2.jdk/Contents/Home",
+    "gradleKey": "jcd",
+    "ssh": { "user": "ubuntu", "host": "119.29.236.232", "port": 22 },
+    "bsFront": {
+      "gradleTask": "client:client-front:dist -Pkey=jcd",
+      "distDir": "client/client-front/dist/jcd",
+      "remotePath": "/home/ubuntu/financial/nginx/wwwroot/client/",
+      "postCommand": null
+    },
+    "bsServer": {
+      "gradleTask": "client:client-server:bootJar",
+      "jarLocal": "client/client-server/build/libs/financial-v5.jar",
+      "remotePath": "/home/ubuntu/financial/server/financial.jar",
+      "postCommand": "sudo docker restart financial_client"
+    },
+    "adminFront": {
+      "gradleTask": "admin:admin-front:dist",
+      "distDir": "admin/admin-front/dist",
+      "remotePath": "/home/ubuntu/financial/nginx/wwwroot/admin/",
+      "postCommand": null
+    },
+    "adminServer": {
+      "gradleTask": "admin:admin-server:bootJar",
+      "jarLocal": "admin/admin-server/build/libs/financial-admin-v5.jar",
+      "remotePath": "/home/ubuntu/financial/server/financiala.jar",
+      "postCommand": "sudo docker restart financial_admin"
+    },
+    "quirks": "金财道 OEM。唯一使用不同 JDK（/Library/Java/.../jdk-17.0.2.jdk）的环境；路径为 /home/ubuntu/financial 前缀；rsync 目标带尾斜杠；后端裸 sudo docker restart。admin 前端不带 -Pkey。"
+  },
+  "xl": {
+    "file": "update-oem-xl.sh",
+    "javaHome": "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home",
+    "gradleKey": "xl",
+    "ssh": { "user": "root", "host": "123.57.185.78", "port": 22 },
+    "bsFront": {
+      "gradleTask": "client:client-front:dist -Pkey=xl",
+      "distDir": "client/client-front/dist/xl",
+      "remotePath": "/data/wwwroot/qiyunle.cn",
+      "postCommand": "sh /data/script/mod.sh financial"
+    },
+    "bsServer": {
+      "gradleTask": "client:client-server:bootJar",
+      "jarLocal": "client/client-server/build/libs/financial-v5.jar",
+      "remotePath": "/data/server/financial/financial-v5.jar",
+      "postCommand": "sh /data/script/update_dockcer.sh financial 9097 financial_client"
+    },
+    "adminFront": {
+      "gradleTask": "admin:admin-front:dist",
+      "distDir": "admin/admin-front/dist",
+      "remotePath": "/data/wwwroot/ht.qiyunle.cn",
+      "postCommand": "sh /data/script/mod.sh financial-admin"
+    },
+    "adminServer": {
+      "gradleTask": "admin:admin-server:bootJar",
+      "jarLocal": "admin/admin-server/build/libs/financial-admin-v5.jar",
+      "remotePath": "/data/server/financial-admin/financial-admin.jar",
+      "postCommand": "sh /data/script/update.sh financial-admin 9098"
+    },
+    "quirks": "企云乐 OEM。admin 远程 jar 名为 financial-admin.jar（其余环境为 financial-admin-v5.jar）；admin 前端不带 -Pkey；走 mod.sh/update_dockcer.sh/update.sh 脚本体系。"
+  },
+  "xsy": {
+    "file": "update-xsy.sh",
+    "javaHome": "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home",
+    "gradleKey": "xsy",
+    "ssh": { "user": "root", "host": "47.242.133.15", "port": 22 },
+    "bsFront": {
+      "gradleTask": "client:client-front:dist -Pkey=xsy",
+      "distDir": "client/client-front/dist/xsy",
+      "remotePath": "/financial/nginx/wwwroot/client",
+      "postCommand": null
+    },
+    "bsServer": {
+      "gradleTask": "client:client-server:bootJar -PexpTime=2026-09-01",
+      "jarLocal": "client/client-server/build/libs/financial-v5.jar",
+      "remotePath": "/financial/server/financial.jar",
+      "postCommand": "sudo docker restart financial_client"
+    },
+    "adminFront": {
+      "gradleTask": "admin:admin-front:dist -Pkey=xsy",
+      "distDir": "admin/admin-front/dist",
+      "remotePath": "/financial/nginx/wwwroot/admin",
+      "postCommand": null
+    },
+    "adminServer": {
+      "gradleTask": "admin:admin-server:bootJar -PexpTime=2026-09-01",
+      "jarLocal": "admin/admin-server/build/libs/financial-admin-v5.jar",
+      "remotePath": "/financial/server/financiala.jar",
+      "postCommand": "sudo docker restart financial_admin"
+    },
+    "quirks": "新世洋 私有化，唯一带过期时间的环境：bsServer 与 adminServer 编译均加 -PexpTime=2026-09-01（授权到期写入，需按续期调整）。bs/admin 前端均带 -Pkey；后端裸 sudo docker restart。路径为 /financial 前缀（无 data/server）。注意菜单 echo 里域名仍显示 f3/f3a.fenxi365.com（与注释/实际 caiwu.yjyym.com 不符的复制残留）。"
+  },
+  "yjy": {
+    "file": "update-yjy.sh",
+    "javaHome": "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home",
+    "gradleKey": "yjy",
+    "ssh": { "user": "ubuntu", "host": "118.195.153.92", "port": 22 },
+    "bsFront": {
+      "gradleTask": "client:client-front:dist -Pkey=yjy",
+      "distDir": "client/client-front/dist/yjy",
+      "remotePath": "/data/financial/nginx/wwwroot/client",
+      "postCommand": null
+    },
+    "bsServer": {
+      "gradleTask": "client:client-server:bootJar",
+      "jarLocal": "client/client-server/build/libs/financial-v5.jar",
+      "remotePath": "/data/financial/server/financial.jar",
+      "postCommand": "sudo docker restart financial_client"
+    },
+    "adminFront": {
+      "gradleTask": "admin:admin-front:dist -Pkey=yjy",
+      "distDir": "admin/admin-front/dist",
+      "remotePath": "/data/financial/nginx/wwwroot/admin",
+      "postCommand": null
+    },
+    "adminServer": {
+      "gradleTask": "admin:admin-server:bootJar",
+      "jarLocal": "admin/admin-server/build/libs/financial-admin-v5.jar",
+      "remotePath": "/data/financial/server/financiala.jar",
+      "postCommand": "sudo docker restart financial_admin"
+    },
+    "quirks": "有机云。bs 与 admin 前端均带 -Pkey；后端裸 sudo docker restart。路径为 /data/financial 前缀。菜单 echo 里域名仍显示 f3/f3a.fenxi365.com（复制残留，实际 caiwu.yjyym.com）。"
+  }
+}

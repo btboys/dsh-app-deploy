@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-app-deploy
+      name: dsh-app-deploy

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "部署面板",
+    "description": "按环境编排并执行 Gradle 构建、rsync 同步与 SSH 远程命令，实时查看部署日志与执行记录。"
+  }
+}
