@@ -4,6 +4,8 @@
 
 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）插件：把交互式部署工具收进 DSH Web 面板。按环境分组管理配置，勾选模块、拖拽编排执行顺序，一键完成 Gradle 构建、rsync 同步与 SSH 远程命令，实时推送日志并保留执行记录。
 
+![插件界面](docs/screenshot.webp)
+
 ## 特性
 
 - **部署面板**：侧边栏「部署」入口，按环境分组管理，模块勾选 + 拖拽排序，一键部署。
