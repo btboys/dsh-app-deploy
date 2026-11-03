@@ -35,6 +35,17 @@ window.__ModuleLoader__.load({
       const s = Math.round(ms / 1000)
       return s >= 60 ? Math.floor(s / 60) + 'm' + (s % 60) + 's' : s + 's'
     }
+    function fmtAgo(ms) {
+      const s = Math.max(1, Math.round((Date.now() - ms) / 1000))
+      if (s < 60) return '刚刚'
+      const m = Math.round(s / 60)
+      if (m < 60) return m + ' 分钟前'
+      const hh = Math.round(m / 60)
+      if (hh < 24) return hh + ' 小时前'
+      const d = Math.round(hh / 24)
+      if (d < 30) return d + ' 天前'
+      return fmtTime(ms)
+    }
     function clone(v) { return JSON.parse(JSON.stringify(v)) }
     function normPath(p) { return (p || '').replace(/\/+$/, '') }
     function joinPath(base, name) {
@@ -125,10 +136,13 @@ window.__ModuleLoader__.load({
           type: 'button', className: 'dad-env-main', onClick: onSelect,
           'aria-current': selected ? 'true' : undefined,
         },
-          h('span', { className: 'dad-env-name' }, env.name || env.id),
+          h('span', { className: 'dad-env-name' },
+            h('i', { className: 'dad-dot' + (lb ? ' st-' + lb.status : ''), 'aria-hidden': true }),
+            env.name || env.id),
           h('span', { className: 'dad-sub' }, env.id + (env.note ? ' · ' + env.note : '')),
           h('span', { className: 'dad-sub' }, ssh.host ? (ssh.user || 'root') + '@' + ssh.host + ':' + (ssh.port || 22) : 'SSH 未配置'),
           h('span', { className: 'dad-sub dad-build' + (lb ? ' ' + lb.status : '') },
+            h('i', { className: 'dad-dot', 'aria-hidden': true }),
             lb ? '最后构建: ' + fmtTime(lb.time) + '（' + (HSTATUS[lb.status] || lb.status) + '）' : '最后构建: 从未')),
         h('div', { className: 'dad-envops' },
           h('button', {
@@ -279,7 +293,7 @@ window.__ModuleLoader__.load({
       onSave, onDelete, onBrowse,
       jdks, jdkOpen, jdkRef, onJdkFocus, onJdkPick,
     }) {
-      const title = env ? (env.name || '未命名') + ' (' + env.id + ')' : '选择左侧环境进行编辑'
+      const title = env ? '环境配置' : '选择左侧环境进行编辑'
       const groupOptions = groups.map((g) => h('option', { key: g, value: g }))
       const ssh = env ? env.ssh : { host: '', port: 22, user: '', password: '', options: '' }
       return h('div', { className: 'dad-card' },
@@ -340,7 +354,7 @@ window.__ModuleLoader__.load({
                           key: j.path, type: 'button', className: 'dad-jitem',
                           onClick: () => onJdkPick(j.path),
                         },
-                          h('span', { className: 'dad-jlbl' }, '☕ ' + j.label),
+                          h('span', { className: 'dad-jlbl' }, j.label),
                           h('span', { className: 'dad-jfull' }, j.path)))
                         : h('div', { className: 'dad-jempty' }, '未发现可用 JDK')) : null))),
               h('div', { className: 'dad-row' },
@@ -481,7 +495,6 @@ window.__ModuleLoader__.load({
                   title: w.path, disabled: w.path === state.path,
                   onClick: () => onNavigate(w.path),
                 },
-                  h('span', { className: 'dad-wic' }, '⎇'),
                   h('span', { className: 'dad-wbr' }, w.branch || w.head || '(detached)'),
                   w.head ? h('span', { className: 'dad-mono' }, w.head) : null)))
               : null,
@@ -1110,6 +1123,21 @@ window.__ModuleLoader__.load({
       const allSelected = enabledModules.length > 0 && selected.length === enabledModules.length
       const canRun = !!draft && !isNew && selected.length > 0 && !deployState.running
 
+      // 标题行：对象名 + 一句「现状」（ID / 最近部署结果 / SSH 目标），全部来自已有数据
+      const selSsh = draft && draft.ssh ? draft.ssh : {}
+      const selSshText = selSsh.host ? (selSsh.user || 'root') + '@' + selSsh.host + ':' + (selSsh.port || 22) : ''
+      const selBuild = draft ? lastBuild[draft.id] : null
+      let titleSub = '选择左侧环境，或新增一个环境'
+      let titleDot = ''
+      if (draft) {
+        if (isNew) titleSub = draft.id + ' · 新环境尚未保存，保存后才能部署'
+        else if (selBuild) {
+          titleDot = selBuild.status
+          titleSub = draft.id + ' · 上次部署 ' + (HSTATUS[selBuild.status] || selBuild.status) + ' · ' + fmtTime(selBuild.time)
+            + '（' + fmtAgo(selBuild.time) + '）' + (selSshText ? ' · ' + selSshText : '')
+        } else titleSub = draft.id + ' · ' + (selSshText ? selSshText + ' · ' : '') + '从未部署'
+      }
+
       return h('div', { className: 'dad-root' },
         h('style', null, CSS),
         h('input', {
@@ -1130,17 +1158,14 @@ window.__ModuleLoader__.load({
           onExport: exportConfig,
         }),
         h('div', { className: 'dad-right' },
-          h(EnvForm, {
-            env: draft, isNew, groups, message: formMsg, open: formOpen,
-            onToggle: () => setFormOpen((v) => !v),
-            onPatch: patchEnv, onPatchSsh: patchSsh, onPatchModule: patchModule,
-            onAddModule: addModule, onDeleteModule: askDeleteModule,
-            onSave: saveEnv, onDelete: deleteCurrentEnv, onBrowse: openBrowse,
-            jdks, jdkOpen, jdkRef, onJdkFocus: openJdk, onJdkPick: pickJdk,
-          }),
+          h('div', { className: 'dad-title' },
+            h('h1', { className: 'dad-h1' }, draft ? (draft.name || '未命名环境') : '部署'),
+            h('p', { className: 'dad-title-sub' },
+              titleDot ? h('i', { className: 'dad-dot st-' + titleDot, 'aria-hidden': true }) : null,
+              titleSub)),
           h('div', { className: 'dad-card' },
             h('div', { className: 'dad-card-head' },
-              h('span', { className: 'dad-card-title' }, '部署（勾选模块、拖动编排执行顺序）')),
+              h('span', { className: 'dad-card-title' }, '部署')),
             h(GitBar, {
               env: draft, git: gitInfo, buildPath,
               onPickPath: (value) => {
@@ -1202,7 +1227,7 @@ window.__ModuleLoader__.load({
                     h('button', {
                       type: 'button', className: 'dad-ordel', title: '移除', 'aria-label': '从执行顺序移除',
                       onClick: (ev) => { ev.stopPropagation(); toggleSel(id) },
-                    }, '✕'))
+                    }, '×'))
                 })),
             h('div', { className: 'dad-bar' },
               h('span', { className: 'dad-summary' },
@@ -1210,16 +1235,23 @@ window.__ModuleLoader__.load({
                   ? ['环境 ', h('b', { key: 'n' }, draft.name), ' · 已选 ', h('b', { key: 'c' }, String(selected.length)), ' 个模块']
                   : '未选择'),
               h('button', {
-                type: 'button', className: 'dad-btn dad-run',
+                type: 'button', className: 'dad-btn dad-btn-primary dad-run',
                 disabled: !canRun, onClick: requestDeploy,
               }, deployState.running ? '部署中…' : '执行部署'),
-              deployState.text ? h('span', { className: 'dad-msg ' + (deployState.kind || '') }, deployState.text) : null),
+              deployState.text && deployState.text !== '部署中...'
+                ? h('span', { className: 'dad-msg ' + (deployState.kind || '') }, deployState.text)
+                : null),
             isNew ? h('div', { className: 'dad-hint' }, '当前环境尚未保存，保存环境后才能执行部署。') : null),
           h('div', { className: 'dad-card' },
             h('div', { className: 'dad-card-head' },
-              h('span', { className: 'dad-card-title' }, '部署日志')),
+              h('span', { className: 'dad-card-title' }, '部署日志'),
+              !logText && !deployState.running && history[0]
+                ? h('span', { className: 'dad-head-note' },
+                  '上次部署 ' + fmtTime(history[0].startTime)
+                  + (history[0].durationMs != null ? ' · 耗时 ' + fmtDur(history[0].durationMs) : ''))
+                : null),
             h('pre', { className: 'dad-log', ref: logRef },
-              logText || (deployState.running ? '等待日志…' : '（尚未执行）'))),
+              logText || (deployState.running ? '等待日志…' : (history[0] && history[0].logTail) || '（尚未执行）'))),
           h('div', { className: 'dad-card' },
             h('div', { className: 'dad-card-head' },
               h('span', { className: 'dad-card-title' }, '执行记录'),
@@ -1236,8 +1268,8 @@ window.__ModuleLoader__.load({
                     : history.map((r) => h('details', { key: r.id, className: 'dad-hrow' },
                       h('summary', { className: 'dad-hsum' },
                         h('span', { className: 'dad-badge ' + r.status }, HSTATUS[r.status] || r.status),
-                        h('span', { className: 'dad-mono' }, fmtTime(r.startTime)),
-                        r.durationMs != null ? h('span', { className: 'dad-muted' }, '耗时 ' + fmtDur(r.durationMs)) : null,
+                        h('span', { className: 'dad-mono', title: fmtTime(r.startTime) }, fmtAgo(r.startTime)),
+                        r.durationMs != null ? h('span', { className: 'dad-muted dad-mono' }, '耗时 ' + fmtDur(r.durationMs)) : null,
                         h('span', { className: 'dad-hmods' }, (r.modules || []).map((m) => m.name || m.id).join(' + ')),
                         r.status === 'failed'
                           ? h('span', { className: 'dad-err dad-hfail' },
@@ -1245,7 +1277,15 @@ window.__ModuleLoader__.load({
                             + (r.failedStep ? ' / ' + r.failedStep : '')
                             + ' (exit ' + r.exitCode + ')')
                           : null),
-                      r.logTail ? h('pre', { className: 'dad-hlog' }, r.logTail) : null))))),
+                      r.logTail ? h('pre', { className: 'dad-hlog' }, r.logTail) : null)))),
+          h(EnvForm, {
+            env: draft, isNew, groups, message: formMsg, open: formOpen,
+            onToggle: () => setFormOpen((v) => !v),
+            onPatch: patchEnv, onPatchSsh: patchSsh, onPatchModule: patchModule,
+            onAddModule: addModule, onDeleteModule: askDeleteModule,
+            onSave: saveEnv, onDelete: deleteCurrentEnv, onBrowse: openBrowse,
+            jdks, jdkOpen, jdkRef, onJdkFocus: openJdk, onJdkPick: pickJdk,
+          })),
         confirmState ? h(ConfirmDialog, { state: confirmState, onClose: () => setConfirmState(null) }) : null,
         browse ? h(BrowseModal, {
           state: browse, onClose: () => setBrowse(null),
@@ -1257,25 +1297,28 @@ window.__ModuleLoader__.load({
     // ---------- 样式（颜色/背景/边框只用主题变量） ----------
 
     const CSS = [
-      '.dad-root{height:100%;box-sizing:border-box;display:flex;overflow:hidden;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.55}',
+      '.dad-root{height:100%;box-sizing:border-box;display:flex;overflow:hidden;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5}',
       '.dad-root *{box-sizing:border-box}',
       '.dad-root :focus-visible{outline:2px solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}',
-      '.dad-left{width:280px;flex:0 0 280px;min-width:0;min-height:0;display:flex;flex-direction:column;border-right:.5px solid var(--dsw-alias-border-l3)}',
-      '.dad-left-head{flex:none;display:flex;align-items:center;gap:8px;padding:12px 12px 8px}',
+      '.dad-left{width:264px;flex:0 0 264px;min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--dsw-alias-bg-module-platform);border-right:.5px solid var(--dsw-alias-border-l3)}',
+      '.dad-left-head{flex:none;display:flex;align-items:center;gap:8px;padding:14px 12px 10px}',
       '.dad-left-title{flex:1;min-width:0;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.dad-envs{flex:1;min-height:0;overflow:auto;padding:0 10px 12px;display:flex;flex-direction:column;gap:6px}',
-      '.dad-grp{margin:8px 2px 0;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+      '.dad-grp{margin:10px 2px 0;padding-left:10px;font-size:12px;color:var(--dsw-alias-label-tertiary)}',
       '.dad-grp:first-child{margin-top:0}',
       '.dad-env{position:relative;display:block;width:100%;min-width:0;padding:8px 10px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1);color:inherit;font:inherit;text-align:left}',
       '.dad-env-main{display:block;width:100%;min-width:0;margin:0;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}',
       '.dad-env:hover{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l4)}',
-      '.dad-env[data-sel="1"]{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-interactive-bg-hover);box-shadow:inset 0 0 0 1px var(--dsw-alias-state-business-primary)}',
-      '.dad-env-name{display:block;font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:58px}',
+      '.dad-env[data-sel="1"]{border-color:var(--dsw-alias-border-l3);background:var(--dsw-alias-state-business-tertiary)}',
+      '.dad-env-name{display:block;font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:58px}',
       '.dad-envops{position:absolute;top:6px;right:8px;display:none;gap:8px;align-items:center}',
       '.dad-env:hover .dad-envops,.dad-env:focus-within .dad-envops{display:flex}',
-      '.dad-linkbtn{border:0;background:none;padding:0;font:inherit;font-size:11px;cursor:pointer;color:var(--dsw-alias-state-business-primary)}',
+      '.dad-linkbtn{border:0;background:none;padding:0;font:inherit;font-size:12px;cursor:pointer;color:var(--dsw-alias-state-business-primary)}',
       '.dad-linkbtn-danger{color:var(--dsw-alias-state-error-primary)}',
-      '.dad-right{flex:1 1 auto;min-width:0;min-height:0;overflow:auto;padding:14px 16px 24px;display:flex;flex-direction:column;gap:12px}',
+      '.dad-right{flex:1 1 auto;min-width:0;min-height:0;overflow:auto;padding:16px 20px 32px;display:flex;flex-direction:column;gap:16px}',
+      '.dad-title{margin:2px 0 0;min-width:0}',
+      '.dad-h1{margin:0;font-size:20px;font-weight:600;line-height:1.3;letter-spacing:-0.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dad-title-sub{margin:5px 0 0;font-size:13px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.dad-loaderr{flex:none;margin:12px 16px 0;padding:8px 12px;border-radius:var(--dsw-radius-md);border:.5px solid var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary);font-size:12px}',
       '.dad-notice{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:70;display:flex;align-items:center;gap:10px;max-width:min(640px,80vw);padding:7px 12px;border-radius:var(--dsw-radius-md);border:.5px solid var(--dsw-alias-border-l3);background:var(--dsw-alias-bg-layer-2);box-shadow:var(--dsw-elevation-prominent);font-size:12px;color:var(--dsw-alias-label-primary)}',
       '.dad-notice.ok{border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary)}',
@@ -1284,17 +1327,17 @@ window.__ModuleLoader__.load({
       '.dad-notice-text{min-width:0;overflow-wrap:anywhere}',
       '.dad-notice-close{border:0;background:none;color:inherit;font-size:14px;line-height:1;padding:0 2px;cursor:pointer;opacity:.7}',
       '.dad-notice-close:hover{opacity:1}',
-      '.dad-card{min-width:0;padding:12px 14px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1)}',
-      '.dad-card-head{display:flex;align-items:center;gap:8px;min-width:0;margin-bottom:10px}',
+      '.dad-card{min-width:0;padding:14px 16px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1)}',
+      '.dad-card-head{display:flex;align-items:center;gap:8px;min-width:0;margin-bottom:12px}',
       '.dad-card-title{flex:1;min-width:0;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.dad-sec{padding:10px 12px;margin-bottom:10px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-lg);min-width:0}',
-      '.dad-sec-title{margin-bottom:8px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary)}',
+      '.dad-sec{padding:12px 14px;margin-bottom:10px;border-radius:var(--dsw-radius-lg);min-width:0;background:var(--dsw-alias-bg-module-platform)}',
+      '.dad-sec-title{margin-bottom:10px;font-size:12.5px;font-weight:600;color:var(--dsw-alias-label-secondary)}',
       '.dad-row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;align-items:flex-end;min-width:0}',
       '.dad-row:last-child{margin-bottom:0}',
       '.dad-field{display:flex;flex-direction:column;gap:3px;flex:1 1 170px;min-width:0}',
       '.dad-field-wide{flex:2 1 300px}',
-      '.dad-label{font-size:11px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.dad-input,.dad-select,.dad-textarea{width:100%;min-width:0;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;padding:4px 8px;outline:none}',
+      '.dad-label{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dad-input,.dad-select,.dad-textarea{width:100%;min-width:0;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;padding:5px 9px;outline:none}',
       '.dad-input:focus,.dad-select:focus,.dad-textarea:focus{border-color:var(--dsw-alias-state-business-primary)}',
       '.dad-input:disabled{color:var(--dsw-alias-label-tertiary);cursor:not-allowed}',
       '.dad-textarea{resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.5}',
@@ -1303,19 +1346,26 @@ window.__ModuleLoader__.load({
       '.dad-chk{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;align-self:flex-end;padding-bottom:5px;font-size:12px;color:var(--dsw-alias-label-secondary);cursor:pointer}',
       '.dad-chk input[type=checkbox]{accent-color:var(--dsw-alias-state-business-primary);width:14px;height:14px;margin:0}',
       '.dad-autoflex{align-self:center;padding-bottom:0}',
-      '.dad-hint{margin-top:4px;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+      '.dad-hint{margin-top:4px;font-size:12px;color:var(--dsw-alias-label-tertiary)}',
       '.dad-muted{color:var(--dsw-alias-label-tertiary)}',
       '.dad-err{color:var(--dsw-alias-state-error-primary)}',
-      '.dad-msg{font-size:11.5px;font-weight:600;min-width:0;overflow-wrap:anywhere}',
-      '.dad-msg.ok{color:var(--dsw-alias-state-success-primary)}',
-      '.dad-msg.err{color:var(--dsw-alias-state-error-primary)}',
-      '.dad-msg.warn{color:var(--dsw-alias-state-warn-label)}',
-      '.dad-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}',
-      '.dad-sub{display:block;margin-top:2px;font-size:11px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.dad-build.success{color:var(--dsw-alias-state-success-primary)}',
-      '.dad-build.failed{color:var(--dsw-alias-state-error-primary)}',
-      '.dad-build.running,.dad-build.aborted{color:var(--dsw-alias-state-warn-label)}',
-      '.dad-btn{flex:0 0 auto;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;padding:4px 10px;cursor:pointer;white-space:nowrap}',
+      '.dad-msg{font-size:12.5px;font-weight:600;min-width:0;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary)}',
+      '.dad-msg.ok::before,.dad-msg.err::before,.dad-msg.warn::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:1px}',
+      '.dad-msg.ok::before{background:var(--dsw-alias-state-success-primary)}',
+      '.dad-msg.err::before{background:var(--dsw-alias-state-error-primary)}',
+      '.dad-msg.warn::before{background:var(--dsw-alias-state-warn-primary)}',
+      '.dad-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}',
+      '.dad-sub{display:block;margin-top:2px;font-size:12px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dad-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-caption);margin-right:5px;vertical-align:1px}',
+      '.dad-dot.st-success{background:var(--dsw-alias-state-success-primary)}',
+      '.dad-dot.st-failed{background:var(--dsw-alias-state-error-primary)}',
+      '.dad-dot.st-running,.dad-dot.st-aborted{background:var(--dsw-alias-state-warn-primary)}',
+      '.dad-env-name .dad-dot,.dad-title-sub .dad-dot{margin-right:6px;vertical-align:1px}',
+      '.dad-head-note{flex:0 0 auto;font-size:12px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
+      '.dad-build.success .dad-dot{background:var(--dsw-alias-state-success-primary)}',
+      '.dad-build.failed .dad-dot{background:var(--dsw-alias-state-error-primary)}',
+      '.dad-build.running .dad-dot,.dad-build.aborted .dad-dot{background:var(--dsw-alias-state-warn-primary)}',
+      '.dad-btn{flex:0 0 auto;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;padding:5px 11px;cursor:pointer;white-space:nowrap}',
       '.dad-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
       '.dad-btn:disabled{opacity:.5;cursor:default}',
       '.dad-btn-primary{background:var(--dsw-alias-button-primary-fill);border-color:transparent;color:var(--dsw-alias-label-primary-foreground)}',
@@ -1336,24 +1386,24 @@ window.__ModuleLoader__.load({
       '.dad-jlbl{font-size:12px;font-weight:600}',
       '.dad-jfull{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;color:var(--dsw-alias-label-tertiary);word-break:break-all}',
       '.dad-jempty{padding:8px 10px;font-size:11.5px;color:var(--dsw-alias-label-tertiary)}',
-      '.dad-gitbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;margin-bottom:10px;padding:6px 10px;font-size:11.5px;border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-module-platform)}',
+      '.dad-gitbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;margin-bottom:12px;padding:8px 12px;font-size:12.5px;border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-module-platform)}',
       '.dad-ghead{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto}',
-      '.dad-branch{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:600;color:var(--dsw-alias-state-business-primary);border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm);padding:1px 6px}',
-      '.dad-gpath{flex:1 1 160px;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;color:var(--dsw-alias-label-tertiary);word-break:break-all}',
-      '.dad-gtmp{flex:0 0 auto;font-size:10.5px;color:var(--dsw-alias-state-warn-label);border:.5px solid var(--dsw-alias-state-warn-primary);border-radius:var(--dsw-radius-sm);padding:1px 6px}',
-      '.dad-gsel{flex:0 0 auto;width:auto;max-width:100%;font-size:11.5px}',
+      '.dad-branch{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;font-weight:600;color:var(--dsw-alias-state-business-primary);border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm);padding:2px 7px;background:var(--dsw-alias-bg-layer-1)}',
+      '.dad-gpath{flex:1 1 160px;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--dsw-alias-label-secondary);word-break:break-all}',
+      '.dad-gtmp{flex:0 0 auto;font-size:11.5px;color:var(--dsw-alias-state-warn-label);border:.5px solid var(--dsw-alias-state-warn-primary);border-radius:var(--dsw-radius-sm);padding:1px 6px}',
+      '.dad-gsel{flex:0 0 auto;width:auto;max-width:100%;font-size:12.5px}',
       '.dad-modbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}',
       '.dad-mods{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;min-width:0}',
-      '.dad-opt{display:flex;align-items:center;gap:8px;min-width:0;padding:6px 9px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);cursor:pointer}',
+      '.dad-opt{display:flex;align-items:center;gap:8px;min-width:0;padding:8px 10px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);cursor:pointer}',
       '.dad-opt:hover{border-color:var(--dsw-alias-border-l4);background:var(--dsw-alias-interactive-bg-hover)}',
-      '.dad-opt[data-sel="1"]{border-color:var(--dsw-alias-state-business-primary)}',
+      '.dad-opt[data-sel="1"]{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-state-business-tertiary)}',
       '.dad-opt input[type=checkbox]{flex:0 0 auto;width:14px;height:14px;margin:0;accent-color:var(--dsw-alias-state-business-primary)}',
       '.dad-opt-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column}',
       '.dad-opt-name{font-size:12.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.dad-otitle{margin:10px 0 6px;font-size:12px;color:var(--dsw-alias-label-secondary)}',
       '.dad-otitle b{color:var(--dsw-alias-state-business-primary)}',
       '.dad-order{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-height:42px;padding:6px;border:1px dashed var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-module-platform)}',
-      '.dad-order-emptytext{font-size:11.5px;color:var(--dsw-alias-label-tertiary);padding:2px 4px}',
+      '.dad-order-emptytext{font-size:12px;color:var(--dsw-alias-label-secondary);padding:2px 4px}',
       '.dad-orderitem{display:inline-flex;align-items:center;gap:6px;max-width:220px;min-width:0;padding:4px 8px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);font-size:12px;cursor:grab;user-select:none}',
       '.dad-orderitem:hover{border-color:var(--dsw-alias-border-l4)}',
       '.dad-orderitem[data-over="1"]{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-interactive-bg-hover)}',
@@ -1363,22 +1413,23 @@ window.__ModuleLoader__.load({
       '.dad-kindtag{flex:0 0 auto;font-size:10px;color:var(--dsw-alias-label-tertiary);border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm);padding:0 5px}',
       '.dad-ordel{flex:0 0 auto;border:0;background:none;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1;padding:0 2px;cursor:pointer}',
       '.dad-ordel:hover{color:var(--dsw-alias-state-error-primary)}',
-      '.dad-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px}',
+      '.dad-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px -16px -14px;padding:12px 16px;background:var(--dsw-alias-bg-module-platform);border-radius:0 0 var(--dsw-radius-lg) var(--dsw-radius-lg)}',
       '.dad-summary{font-size:12.5px}',
-      '.dad-summary b{color:var(--dsw-alias-state-business-primary)}',
-      '.dad-run{padding:7px 20px;font-size:13px;font-weight:600;border-color:transparent;background:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-label-primary-foreground)}',
-      '.dad-run:hover:not(:disabled){background:var(--dsw-alias-state-error-primary);opacity:.9}',
-      '.dad-run:disabled{background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-tertiary);opacity:1}',
-      '.dad-log{margin:0;height:240px;overflow:auto;padding:10px 12px;border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-markdown-code-block);color:var(--dsw-alias-label-primary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.5;white-space:pre-wrap;word-break:break-all}',
+      '.dad-summary b{color:var(--dsw-alias-label-primary)}',
+      '.dad-run{padding:8px 26px;font-size:13.5px;font-weight:600}',
+      '.dad-run:disabled{opacity:.4;cursor:default}',
+      '.dad-log{margin:0;height:200px;overflow:auto;padding:10px 12px;border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-markdown-code-block);color:var(--dsw-alias-label-primary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.5;white-space:pre-wrap;word-break:break-all}',
       '.dad-hist{display:flex;flex-direction:column;gap:6px;min-width:0}',
       '.dad-hrow{border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);min-width:0}',
-      '.dad-hsum{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:6px 10px;font-size:12px;cursor:pointer;list-style:none}',
+      '.dad-hrow:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      '.dad-hsum{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;font-size:12.5px;cursor:pointer;list-style:none;font-variant-numeric:tabular-nums}',
       '.dad-hsum::-webkit-details-marker{display:none}',
-      '.dad-badge{flex:0 0 auto;font-size:10.5px;font-weight:600;border-radius:999px;padding:1px 8px;border:.5px solid currentColor}',
-      '.dad-badge.success{color:var(--dsw-alias-state-success-primary)}',
-      '.dad-badge.failed{color:var(--dsw-alias-state-error-primary)}',
-      '.dad-badge.running{color:var(--dsw-alias-state-business-primary)}',
-      '.dad-badge.aborted{color:var(--dsw-alias-state-warn-label)}',
+      '.dad-badge{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary)}',
+      '.dad-badge::before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-caption)}',
+      '.dad-badge.success::before{background:var(--dsw-alias-state-success-primary)}',
+      '.dad-badge.failed::before{background:var(--dsw-alias-state-error-primary)}',
+      '.dad-badge.running::before{background:var(--dsw-alias-state-business-primary)}',
+      '.dad-badge.aborted::before{background:var(--dsw-alias-state-warn-primary)}',
       '.dad-hmods{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.dad-hfail{min-width:0;overflow-wrap:anywhere}',
       '.dad-hlog{margin:0 10px 10px;max-height:220px;overflow:auto;padding:8px 10px;border-radius:var(--dsw-radius-md);background:var(--dsw-alias-markdown-code-block);color:var(--dsw-alias-label-primary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all}',
@@ -1401,7 +1452,7 @@ window.__ModuleLoader__.load({
       '.dad-dir{border:0;background:none;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;text-align:left;padding:5px 8px;border-radius:var(--dsw-radius-sm);cursor:pointer;word-break:break-all;min-width:0}',
       '.dad-dir:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.dad-envs,.dad-right,.dad-log,.dad-dirs,.dad-modal-body,.dad-jdkdd,.dad-hlog,.dad-plan{--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2)}',
-      '@media (max-width:900px){.dad-root{flex-direction:column}.dad-left{width:auto;flex:0 0 auto;max-height:38vh;border-right:0;border-bottom:.5px solid var(--dsw-alias-border-l3)}.dad-right{flex:1 1 auto}}',
+      '@media (max-width:900px){.dad-root{flex-direction:column}.dad-left{width:auto;flex:0 0 auto;max-height:38vh;border-right:0;border-bottom:.5px solid var(--dsw-alias-border-l3)}.dad-right{flex:1 1 auto}.dad-h1{font-size:18px}.dad-title-sub{font-size:12px}}',
     ].join('\n')
 
     return {
