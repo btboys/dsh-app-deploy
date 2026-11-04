@@ -7,6 +7,7 @@ import { initConfig } from './server/config.js'
 import { initHistory } from './server/history.js'
 import { handleRpc } from './server/rpc.js'
 import { handleDeploy, killActiveProcess } from './server/deployment.js'
+import { registerTools } from './server/tools.js'
 
 // ponytail: linked workspace cannot resolve dsh's own packages; resolve from the dsh entry instead
 function hostRequire() {
@@ -22,7 +23,7 @@ const host = hostRequire()
 const schema = host('@deepseek-ai/schemastery')
 const z = schema.z ?? schema
 
-export const inject = ['webServer']
+export const inject = ['webServer', 'tools']
 export const Config = z.object({
   dataDir: z.string().default(''),
   defaultProjectPath: z.string().default(''),
@@ -59,13 +60,19 @@ function resolveDataDir(config) {
 
 export function apply(ctx, config) {
   const dataDir = resolveDataDir(config)
-  // 延迟初始化：apply 内不 await，首个请求时才读数据目录/初始化配置
+  // 延迟初始化：apply 内不 await，首个请求/工具调用时才读数据目录/初始化配置
   let ready
   const ensure = () => (ready ??= (async () => {
     await mkdir(dataDir, { recursive: true })
     await initConfig({ dataDir, defaultProjectPath: config?.defaultProjectPath || '' })
     await initHistory(dataDir)
   })())
+  // AI 工具：列出环境 / 执行部署 / 执行记录 / SSH 测试（defineTool 从 dsh 宿主解析，失败不影响面板）
+  try {
+    registerTools(ctx, host('@deepseek-ai/dsh-tools').defineTool, ensure)
+  } catch (err) {
+    console.warn('[dsh-app-deploy] 注册 AI 工具失败:', err?.message || err)
+  }
 
   ctx.effect(() => {
     const dispose = ctx.webServer.register({

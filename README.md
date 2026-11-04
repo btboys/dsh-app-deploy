@@ -31,7 +31,7 @@
 插件发布在 npm，通过 DSH 插件管理器直接安装：
 
 ```text
-plugin_manager → action: install_bundle → target: dsh-app-deploy@0.3.0
+plugin_manager → action: install_bundle → target: dsh-app-deploy@0.3.1
 ```
 
 安装后刷新 DSH Web，左侧导航出现「部署」入口。
@@ -48,6 +48,10 @@ plugin_manager → action: install_bundle → target: dsh-app-deploy@0.3.0
 | `defaultProjectPath` | `''` | 新建环境的项目路径默认值 |
 
 新装插件默认为空配置（不播种），环境通过「+ 添加环境」或「导入」创建。
+
+## AI 工具
+
+插件向 dsh Agent 注册 4 个工具：`deploy_list_envs`（列出环境与模块，密码已剥离）、`deploy_run`（执行部署并返回日志）、`deploy_history`（执行记录）、`ssh_test_connection`（SSH 连通性测试）。可直接让 AI 代查发布状态或执行部署。
 
 ## 使用
 

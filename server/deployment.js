@@ -463,4 +463,45 @@ export async function handleDeploy(req, res, url) {
   }
 }
 
+// 供 AI 工具调用：同步执行一次部署并返回结果；与 SSE 入口共用部署锁、执行记录与日志尾部
+export async function runDeploy(envId, moduleIds = []) {
+  const env = getEnvs().find(e => e.id === envId)
+  if (!env) throw new Error(`未知环境: ${envId}`)
+  if (running && !running.done) throw new Error(`已有部署进行中（${running.label}），请稍后再试`)
+  const want = (moduleIds || []).filter(Boolean)
+  const enabled = env.modules.filter(m => m.enabled)
+  // 未指定模块 = 全部启用模块（按配置顺序）；指定则按给定顺序
+  const mods = want.length
+    ? want.map(id => enabled.find(m => m.id === id)).filter(Boolean)
+    : enabled
+  if (!mods.length) throw new Error('没有可部署的启用模块（检查模块 ID 与启用状态）')
+  if (want.length && mods.length !== want.length) {
+    const missing = want.filter(id => !enabled.some(m => m.id === id))
+    throw new Error(`模块不可用或已禁用: ${missing.join('、')}`)
+  }
+  const runTargets = [...new Set(mods.map(m => targetFor(env, m)))]
+  if (runTargets.some(t => !t.host || !t.user)) throw new Error('SSH 目标配置不完整')
+
+  const rec = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+    envId: env.id, envName: env.name,
+    modules: mods.map(m => ({ id: m.id, name: m.name })),
+    startTime: Date.now(), endTime: null, durationMs: null,
+    status: 'running', exitCode: null, failedModule: null, failedStep: null, logTail: '',
+  }
+  getHistory().push(rec)
+  saveHistory().catch(() => {})
+  running = { clients: new Set(), done: false, label: `${env.name} / ${mods.map(m => m.name).join('+')}`, record: rec, logTail: '', lastCode: null }
+  broadcast(`>>> 开始部署 [AI 工具] ${env.name} / ${mods.map(m => m.name).join('+')}\n`)
+  await runDeployment(env, mods) // 结束后 running.done 已置位、rec 已补齐
+  return {
+    code: rec.exitCode,
+    status: rec.status,
+    durationMs: rec.durationMs,
+    failedModule: rec.failedModule,
+    failedStep: rec.failedStep,
+    logTail: rec.logTail,
+  }
+}
+
 export function activeRecord() { return running && !running.done ? running.record : null }

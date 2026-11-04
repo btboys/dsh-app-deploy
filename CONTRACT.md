@@ -122,6 +122,17 @@ interface DeployRecord {
 }
 ```
 
+### 2.4 AI 工具（注册进 ctx.tools，供模型调用）
+
+| tool | 参数 | 返回 |
+| --- | --- | --- |
+| `deploy_list_envs` | – | `{ active?, envs }`：环境摘要（**密码剥离**，仅 hasPassword 标记）、SSH 目标、模块构建命令/产物路径/发布目标 |
+| `deploy_run` | `{ env: string, modules?: string[] }` | `{ code, status, durationMs, failedModule, failedStep, logTail }`；同步阻塞至部署结束；省略 modules = 全部启用模块（按配置顺序）；与面板共用部署锁，已有部署进行时失败 |
+| `deploy_history` | `{ env?: string, limit?: number }` | 最近部署记录（新→旧，limit 默认 10、上限 50） |
+| `ssh_test_connection` | `{ host, port?, user, password?, keyFile?, options? }` | `{ ok, ms?, error? }`；10s 超时；密钥/密码/agent 三种认证 |
+
+注册方式：`index.js` 注入 `tools` 服务，`apply` 内以宿主解析的 `defineTool`（`@deepseek-ai/dsh-tools`）注册；解析失败仅告警，不影响面板。
+
 ### 2.5 Host 行为（从旧项目移植，不新增功能）
 
 - `server/config.js`：类型归一化（旧 record schema → modules 数组、`-PexpTime` 抽到 `env.expTime`、
