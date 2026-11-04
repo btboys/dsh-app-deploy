@@ -5,7 +5,7 @@ import { cleanTarget, buildRcloneArgs } from '../server/deployment.js'
 const env = { projectPath: '/proj' }
 const mod = (over) => ({
   id: 'm', name: 'm', kind: 'server', enabled: true,
-  gradleTask: 't', key: '', extraArgs: '', localPath: '', remotePath: '/r', postCommand: '', frontEnv: '',
+  buildCmd: './gradlew t', localPath: '', remotePath: '/r', postCommand: '', frontEnv: '',
   ...over,
 })
 
@@ -34,7 +34,7 @@ test('buildRcloneArgs：前端 sync 镜像 + exclude，服务端 copy 不删', (
   const env = { ssh: { host: 'h.example.com', port: 2222, user: 'deploy', password: 'pw', options: '' } }
   const rclone = { bin: '/usr/bin/rclone', pass: 'obscured-pw' }
 
-  const front = buildRcloneArgs(env, mod({ kind: 'front', remotePath: '/www/fxy' }), '/proj/client/dist/', rclone)
+  const front = buildRcloneArgs(env.ssh, mod({ kind: 'front', remotePath: '/www/fxy' }), '/proj/client/dist/', rclone)
   assert.equal(front[0], 'sync')
   assert.deepEqual(front.slice(1, 4), ['/proj/client/dist/', ':sftp:/www/fxy', '--sftp-host'])
   assert.ok(front.includes('--sftp-port') && front[front.indexOf('--sftp-port') + 1] === '2222')
@@ -43,7 +43,7 @@ test('buildRcloneArgs：前端 sync 镜像 + exclude，服务端 copy 不删', (
   // 密码只出现在 --sftp-pass 参数里（混淆值），供 spawn 使用
   assert.ok(front.includes('--sftp-pass') && front[front.indexOf('--sftp-pass') + 1] === 'obscured-pw')
 
-  const server = buildRcloneArgs(env, mod({ kind: 'server', remotePath: '/opt/app' }), '/proj/build/libs/x.jar', rclone)
+  const server = buildRcloneArgs(env.ssh, mod({ kind: 'server', remotePath: '/opt/app' }), '/proj/build/libs/x.jar', rclone)
   assert.equal(server[0], 'copy')
   assert.ok(!server.includes('sync'))
   assert.ok(!server.includes('--exclude'))
@@ -51,11 +51,14 @@ test('buildRcloneArgs：前端 sync 镜像 + exclude，服务端 copy 不删', (
 
 test('buildRcloneArgs：无密码时取 SSH 选项里的 -i 作为密钥文件', () => {
   const env = { ssh: { host: 'h', port: 22, user: 'u', password: '', options: '-i /home/u/.ssh/id_ed25519 -o StrictHostKeyChecking=no' } }
-  const args = buildRcloneArgs(env, mod({ remotePath: '/r' }), '/p/dist/', { bin: 'rclone', pass: null })
+  const args = buildRcloneArgs(env.ssh, mod({ remotePath: '/r' }), '/p/dist/', { bin: 'rclone', pass: null })
   assert.ok(args.includes('--sftp-key-file') && args[args.indexOf('--sftp-key-file') + 1] === '/home/u/.ssh/id_ed25519')
   assert.ok(!args.includes('--sftp-pass'))
-  // 有密码时优先密码，不再推密钥
-  const withPass = buildRcloneArgs(env, mod({ remotePath: '/r' }), '/p/dist/', { bin: 'rclone', pass: 'x' })
+  // 密码与私钥可同时存在（与 ssh/rsync 路径行为一致，rclone 依次尝试）
+  const withPass = buildRcloneArgs(env.ssh, mod({ remotePath: '/r' }), '/p/dist/', { bin: 'rclone', pass: 'x' })
   assert.ok(withPass.includes('--sftp-pass'))
-  assert.ok(!withPass.includes('--sftp-key-file'))
+  assert.ok(withPass.includes('--sftp-key-file') && withPass[withPass.indexOf('--sftp-key-file') + 1] === '/home/u/.ssh/id_ed25519')
+  // 专用 keyFile 字段优先于 options 里的 -i
+  const withKeyFile = buildRcloneArgs({ host: 'h', port: 22, user: 'u', password: '', keyFile: '/k/id_rsa', options: '-i /other/key' }, mod({ remotePath: '/r' }), '/p/dist/', { bin: 'rclone', pass: null })
+  assert.ok(withKeyFile.includes('--sftp-key-file') && withKeyFile[withKeyFile.indexOf('--sftp-key-file') + 1] === '/k/id_rsa')
 })

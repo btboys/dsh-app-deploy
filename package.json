@@ -1,7 +1,7 @@
 {
   "name": "dsh-app-deploy",
-  "version": "0.2.0",
-  "description": "DSH 插件：按环境编排并执行 Gradle 构建、rsync 同步与 SSH 远程命令的部署面板，实时推送日志并保留执行记录。",
+  "version": "0.3.0",
+  "description": "DSH 插件：按环境编排并执行构建（Gradle/Maven/前端）、多 SSH 目标发布、rsync/rclone 同步与远程命令的部署面板，支持连接测试，实时推送日志并保留执行记录。",
   "repository": "btboys/dsh-app-deploy",
   "type": "module",
   "icon": "./icon.svg",

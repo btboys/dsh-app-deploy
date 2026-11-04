@@ -17,7 +17,7 @@ function makeEnv(id, name) {
   env.id = id
   env.name = name
   env.projectPath = '/tmp/project'
-  env.ssh.host = 'localhost'
+  env.sshs[0].host = 'localhost'
   env.modules = [{ ...env.modules[0], remotePath: '/www' }]
   return env
 }
@@ -97,7 +97,7 @@ test('importEnvs：同 ID 覆盖本地、新 ID 追加，非法配置整体拒�
   assert.deepEqual(res.value.added, ['imp-new'])
   assert.equal(res.value.envs.length, 2)
   assert.equal(res.value.envs.find(e => e.id === 'fxy').name, '导入覆盖名')
-  assert.equal(res.value.envs.find(e => e.id === 'fxy').ssh.host, base.ssh.host)
+  assert.equal(res.value.envs.find(e => e.id === 'fxy').sshs[0].host, base.sshs[0].host)
   assert.equal(res.value.envs.find(e => e.id === 'imp-new').name, '导入新增')
   // 覆盖不改变原有顺序，新环境追加到末尾
   assert.deepEqual(res.value.envs.map(e => e.id), ['fxy', 'imp-new'])

@@ -31,7 +31,7 @@
 插件发布在 npm，通过 DSH 插件管理器直接安装：
 
 ```text
-plugin_manager → action: install_bundle → target: dsh-app-deploy@0.2.0
+plugin_manager → action: install_bundle → target: dsh-app-deploy@0.3.0
 ```
 
 安装后刷新 DSH Web，左侧导航出现「部署」入口。
@@ -54,7 +54,7 @@ plugin_manager → action: install_bundle → target: dsh-app-deploy@0.2.0
 单模块部署流程：
 
 ```
-清理构建目录 → ./gradlew <task> [-Pkey] [额外参数] [-PexpTime]
+清理构建目录 → 执行模块构建命令（通用：./gradlew … / mvn … / npm run build；首 token 为 gradle 的服务端自动追加 -PexpTime）
   → rsync [-r -t -z] 本地产物 → user@host:远程路径（前端加 --delete）
     （无 rsync 时回退 rclone：前端 rclone sync / 服务端 rclone copy，走 SFTP）
   → ssh 远程命令（可空）

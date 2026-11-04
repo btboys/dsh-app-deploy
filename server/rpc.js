@@ -1,8 +1,8 @@
 import { promises as fsp } from 'node:fs'
 import { getEnvs, saveEnvs, normalizeEnv, isNewSchema, templateEnv, validateEnv, frontEnvFile, getDefaultProjectPath } from './config.js'
 import { getHistory, replaceHistory, HIST_LIMIT } from './history.js'
-import { activeRecord } from './deployment.js'
-import { listJdks, listWorktrees, readGitInfo, browseDirectory, which } from './local-tools.js'
+import { activeRecord, testSsh } from './deployment.js'
+import { listJdks, listNodes, listPackageManagers, listWorktrees, readGitInfo, browseDirectory, which } from './local-tools.js'
 
 // sshpass 无 Windows 版本；警告文案按平台给出可操作的下一步（保存/导入两处共用）
 const SSHPASS_HINT = process.platform === 'win32'
@@ -31,7 +31,7 @@ const methods = {
     if (i >= 0) envs[i] = env; else envs.push(env)
     await saveEnvs()
     let warning = ''
-    if (env.ssh.password && !(await which('sshpass'))) {
+    if ((env.sshs || []).some(s => s.password) && !(await which('sshpass'))) {
       warning = '已保存，' + SSHPASS_HINT
     }
     return { envs: getEnvs(), warning }
@@ -72,7 +72,7 @@ const methods = {
     await saveEnvs(order.map(id => byId.get(id)))
     const touched = new Set([...added, ...overwritten])
     let warning = ''
-    if (getEnvs().some(e => touched.has(e.id) && e.ssh.password) && !(await which('sshpass'))) {
+    if (getEnvs().some(e => touched.has(e.id) && (e.sshs || []).some(s => s.password)) && !(await which('sshpass'))) {
       warning = '已导入，' + SSHPASS_HINT
     }
     return { envs: getEnvs(), added, overwritten, warning }
@@ -89,6 +89,13 @@ const methods = {
     try { return { text: await fsp.readFile(p, 'utf8') } } catch { return { text: '' } }
   },
   jdks: () => listJdks(),
+  nodes: () => listNodes(),
+  packageManagers: () => listPackageManagers(),
+  // 测试 SSH 连通性：target 直接用表单当前值（无需先保存环境）
+  sshTest: async ({ target } = {}) => {
+    if (!target || typeof target !== 'object') throw new Error('缺少测试目标')
+    return testSsh(target)
+  },
   browse: (args) => browseDirectory(args ?? {}),
   git: async ({ env: id, path: sel } = {}) => {
     const e = getEnvs().find(x => x.id === id)

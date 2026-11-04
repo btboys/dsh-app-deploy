@@ -13,7 +13,7 @@ const fixture = templateEnv()
 fixture.id = 'fxy'
 fixture.name = '分析云'
 fixture.projectPath = '/tmp/project'
-fixture.ssh.host = 'localhost'
+fixture.sshs[0].host = 'localhost'
 fixture.modules = [{ ...fixture.modules[0], remotePath: '/www' }]
 await saveEnvs([normalizeEnv(fixture)])
 

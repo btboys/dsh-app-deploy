@@ -160,10 +160,77 @@ export async function listJdks() {
   return out.sort((a, b) => a.label.localeCompare(b.label))
 }
 
+// 探测本机包管理器可执行文件（npm/pnpm/yarn），返回 [{label, path}]，path 为可执行文件路径
+export async function listPackageManagers() {
+  const home = process.env.HOME || process.env.USERPROFILE || ''
+  const exts = IS_WIN ? ['.exe', '.cmd', '.ps1', ''] : ['']
+  const candidates = []
+  const tryBin = async (dir, name) => {
+    for (const ext of exts) {
+      const p = path.join(dir, name + ext)
+      if (await fileExists(p)) { candidates.push({ label: name, path: p }); return }
+    }
+  }
+  // PATH 中的（which 返回可执行文件全路径）
+  for (const name of ['npm', 'pnpm', 'yarn']) {
+    const w = await which(name).catch(() => '')
+    if (w) candidates.push({ label: name, path: w })
+  }
+  // pnpm/yarn 全局 bin 的常见固定位置（不经 PATH）
+  if (home) {
+    await tryBin(path.join(home, '.local/share/pnpm'), 'pnpm')
+    await tryBin(path.join(home, '.volta/bin'), 'pnpm')
+    await tryBin(path.join(home, '.volta/bin'), 'yarn')
+  }
+  await tryBin('/opt/homebrew/bin', 'pnpm')
+  await tryBin('/usr/local/bin', 'pnpm')
+  await tryBin('/opt/homebrew/bin', 'yarn')
+  // 去重（同路径只留一个）
+  const seen = new Set()
+  return candidates.filter((c) => (seen.has(c.path) ? false : (seen.add(c.path), true)))
+}
+
+// 探测本机已装 Node（nvm / n / fnm / volta / nvm-windows），返回 [{label, path}]，path 为版本目录（含 bin/node）
+export async function listNodes() {
+  const found = new Set()
+  const home = process.env.HOME || process.env.USERPROFILE || ''
+  const scan = async (base) => {
+    try { for (const n of await fsp.readdir(base)) found.add(path.join(base, n)) } catch {}
+  }
+  if (home) {
+    await scan(path.join(home, '.nvm/versions/node'))
+    await scan(path.join(home, '.local/share/fnm/node-versions'))
+    await scan(path.join(home, '.volta/tools/image/node'))
+  }
+  await scan('/usr/local/n/versions/node')
+  await scan('/usr/lib/n/versions/node')
+  if (IS_WIN && process.env.NVM_HOME) await scan(process.env.NVM_HOME)
+  const binName = IS_WIN ? 'node.exe' : 'node'
+  const out = []
+  for (const p of found) {
+    // 支持 <dir>/bin/node、<dir>/node.exe（nvm-windows）、<dir>/installation/bin/node（fnm）
+    for (const cand of [p, path.join(p, 'installation')]) {
+      if (await fileExists(path.join(cand, 'bin', binName)) || await fileExists(path.join(cand, binName))) {
+        const label = path.basename(cand).replace(/^v/, '')
+        out.push({ label, path: cand })
+        break
+      }
+    }
+  }
+  // 版本号倒序，新者在前
+  out.sort((a, b) => b.label.localeCompare(a.label, undefined, { numeric: true }))
+  return out
+}
+
 // 目录浏览：非法/不可读抛出错误，由 RPC 层转成 ok:false
 export async function browseDirectory(args = {}) {
   let p = typeof args.path === 'string' ? args.path : ''
   const showHidden = args.hidden === true || args.hidden === '1' || args.hidden === 1
+  const pickFile = args.file === true || args.file === '1' || args.file === 1
+  // 展开 ~/（私钥选择等场景直接从 ~/.ssh 起步）
+  if (p === '~' || p.startsWith('~/') || p.startsWith('~\\')) {
+    p = path.join(process.env.HOME || process.env.USERPROFILE || '/', p.slice(2))
+  }
   if (!p) p = process.env.HOME || (IS_WIN ? (process.env.USERPROFILE || 'C:\\') : '/')
   if (!path.isAbsolute(p)) throw new Error('必须为绝对路径')
   p = path.resolve(p)
@@ -173,7 +240,10 @@ export async function browseDirectory(args = {}) {
     const dirs = entries.filter(d => d.isDirectory() && (showHidden || !d.name.startsWith('.'))).map(d => d.name).sort().slice(0, 200)
     // 若当前目录属于 git 仓库（含子目录/任意 worktree），列出全部 worktree 供前端切换
     const worktrees = await listWorktrees(p)
-    return { path: p, parent, dirs, worktrees }
+    const out = { path: p, parent, dirs, worktrees }
+    // 文件选择模式（如私钥）：额外列出普通文件
+    if (pickFile) out.files = entries.filter(d => d.isFile() && (showHidden || !d.name.startsWith('.'))).map(d => d.name).sort().slice(0, 200)
+    return out
   } catch {
     throw new Error('目录不可读')
   }

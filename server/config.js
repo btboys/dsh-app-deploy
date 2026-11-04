@@ -11,22 +11,57 @@ let envs = []
 const MODULE_NAME = { bsFront: 'bs 前端', bsServer: 'bs 服务端', adminFront: 'admin 前端', adminServer: 'admin 服务端' }
 const MODULE_ORDER = ['bsFront', 'bsServer', 'adminFront', 'adminServer']
 
+// 旧 gradle 三字段（gradleTask/key/extraArgs）拼接为通用构建命令
+function cmdFromGradle(g, key, extra) {
+  return ['./gradlew', g, key ? `-Pkey=${key}` : '', extra || ''].filter(Boolean).join(' ')
+}
+
 function defaultModules() {
   return [
-    { id: 'bsFront', name: 'bs 前端', kind: 'front', enabled: true, gradleTask: 'client:client-front:dist', key: '', extraArgs: '', localPath: 'client/client-front/dist/', remotePath: '', postCommand: '', frontEnv: '' },
-    { id: 'bsServer', name: 'bs 服务端', kind: 'server', enabled: true, gradleTask: 'client:client-server:bootJar', key: '', extraArgs: '', localPath: 'client/client-server/build/libs/financial-v5.jar', remotePath: '', postCommand: '', frontEnv: '' },
-    { id: 'adminFront', name: 'admin 前端', kind: 'front', enabled: true, gradleTask: 'admin:admin-front:dist', key: '', extraArgs: '', localPath: 'admin/admin-front/dist/', remotePath: '', postCommand: '', frontEnv: '' },
-    { id: 'adminServer', name: 'admin 服务端', kind: 'server', enabled: true, gradleTask: 'admin:admin-server:bootJar', key: '', extraArgs: '', localPath: 'admin/admin-server/build/libs/financial-admin-v5.jar', remotePath: '', postCommand: '', frontEnv: '' },
+    { id: 'bsFront', name: 'bs 前端', kind: 'front', enabled: true, buildCmd: './gradlew client:client-front:dist', localPath: 'client/client-front/dist/', remotePath: '', postCommand: '', frontEnv: '' },
+    { id: 'bsServer', name: 'bs 服务端', kind: 'server', enabled: true, buildCmd: './gradlew client:client-server:bootJar', localPath: 'client/client-server/build/libs/financial-v5.jar', remotePath: '', postCommand: '', frontEnv: '' },
+    { id: 'adminFront', name: 'admin 前端', kind: 'front', enabled: true, buildCmd: './gradlew admin:admin-front:dist', localPath: 'admin/admin-front/dist/', remotePath: '', postCommand: '', frontEnv: '' },
+    { id: 'adminServer', name: 'admin 服务端', kind: 'server', enabled: true, buildCmd: './gradlew admin:admin-server:bootJar', localPath: 'admin/admin-server/build/libs/financial-admin-v5.jar', remotePath: '', postCommand: '', frontEnv: '' },
   ]
 }
 
+function defaultSsh() {
+  return { id: 'default', name: '默认', host: '', port: 22, user: 'root', password: '', keyFile: '', options: '' }
+}
+
 function templateEnv() {
-  return { id: '', name: '', note: '', group: '', projectPath: defaultProjectPath, jdkHome: '', expTime: '', ssh: { host: '', port: 22, user: 'root', password: '', options: '' }, modules: defaultModules() }
+  return { id: '', name: '', note: '', group: '', projectPath: defaultProjectPath, jdkHome: '', nodeHome: '', nodeOptions: '', pmPath: '', buildEnv: '', expTime: '', sshs: [defaultSsh()], modules: defaultModules() }
 }
 
 // 把 modules 归一化为数组；record 旧格式自动转数组（id 保持 bsFront 等，name 映射），frontEnv.bs/admin 迁移进对应 front 模块
 function isNewSchema(e) {
-  return !!e && typeof e === 'object' && !!e.ssh && typeof e.ssh === 'object'
+  return !!e && typeof e === 'object' && ((!!e.ssh && typeof e.ssh === 'object') || Array.isArray(e.sshs))
+}
+
+function normalizeSsh(raw, i) {
+  return {
+    id: String(raw?.id || (i === 0 ? 'default' : 'ssh' + (i + 1))),
+    name: String(raw?.name || (i === 0 ? '默认' : 'SSH ' + (i + 1))),
+    host: String(raw?.host ?? ''),
+    port: Number(raw?.port) || 22,
+    user: String(raw?.user ?? 'root'),
+    password: String(raw?.password ?? ''),
+    keyFile: String(raw?.keyFile ?? ''),
+    options: String(raw?.options ?? ''),
+  }
+}
+
+// SSH 目标列表：旧格式 env.ssh 单对象自动迁移为单元素数组
+function toSshArray(e) {
+  if (Array.isArray(e?.sshs) && e.sshs.length) return e.sshs.map(normalizeSsh)
+  if (e?.ssh && typeof e.ssh === 'object') return [normalizeSsh(e.ssh, 0)]
+  return [defaultSsh()]
+}
+
+// 模块的发布目标：sshId 为空或不存在时回落到第一个目标
+export function targetFor(env, m) {
+  const list = Array.isArray(env?.sshs) && env.sshs.length ? env.sshs : [defaultSsh()]
+  return list.find((s) => s.id === m?.sshId) || list[0]
 }
 
 // 把 modules 归一化为数组；record 旧格式自动转数组（id 保持 bsFront 等，name 映射），frontEnv.bs/admin 迁移进对应 front 模块
@@ -41,9 +76,8 @@ function toModArray(mods, fe) {
         name: String(raw?.name || MODULE_NAME[id] || id),
         kind: (raw?.kind === 'server' ? 'server' : raw?.kind === 'front' ? 'front' : (id.endsWith('Front') ? 'front' : 'server')),
         enabled: raw?.enabled !== false,
-        gradleTask: String(raw?.gradleTask || ''),
-        key: String(raw?.key || ''),
-        extraArgs: String(raw?.extraArgs || ''),
+        buildCmd: String(raw?.buildCmd || cmdFromGradle(raw?.gradleTask, raw?.key, raw?.extraArgs)),
+        sshId: String(raw?.sshId || ''),
         localPath: String(raw?.localPath || ''),
         remotePath: String(raw?.remotePath || ''),
         postCommand: String(raw?.postCommand || ''),
@@ -59,7 +93,8 @@ function toModArray(mods, fe) {
       out.push({
         id: mk, name: MODULE_NAME[mk] || mk, kind: mk.endsWith('Front') ? 'front' : 'server',
         enabled: m.enabled !== false,
-        gradleTask: String(m.gradleTask || ''), key: String(m.key || ''), extraArgs: String(m.extraArgs || ''),
+        buildCmd: String(m.buildCmd || cmdFromGradle(m.gradleTask, m.key, m.extraArgs)),
+        sshId: String(m.sshId || ''),
         localPath: String(m.localPath || ''), remotePath: String(m.remotePath || ''), postCommand: String(m.postCommand || ''),
         frontEnv: feText,
       })
@@ -74,19 +109,23 @@ function normalizeEnv(e) {
     group: e.group ?? '',
     projectPath: e.projectPath || defaultProjectPath,
     jdkHome: e.jdkHome ?? '',
+    nodeHome: e.nodeHome ?? '',
+    nodeOptions: e.nodeOptions ?? '',
+    pmPath: e.pmPath ?? '',
+    buildEnv: e.buildEnv ?? '',
     expTime: e.expTime ?? '',
-    ssh: { host: e.ssh?.host ?? '', port: Number(e.ssh?.port) || 22, user: e.ssh?.user ?? 'root', password: e.ssh?.password ?? '', options: e.ssh?.options ?? '' },
+    sshs: toSshArray(e),
     modules: toModArray(e.modules, { bs: e.frontEnv?.bs, admin: e.frontEnv?.admin }),
   }
-  // 迁移（幂等）：把 server 模块 extraArgs 里的 -PexpTime=xxx 提取到 env.expTime 并从 extraArgs 移除
+  // 迁移（幂等）：把 server 模块构建命令里的 -PexpTime=xxx 提取到 env.expTime 并移除
   let extracted = ''
   for (const m of env.modules) {
-    if (m.kind !== 'server' || !m.extraArgs) continue
-    const kept = m.extraArgs.trim().split(/\s+/).filter(p => {
+    if (m.kind !== 'server' || !m.buildCmd) continue
+    const kept = m.buildCmd.trim().split(/\s+/).filter(p => {
       if (p.startsWith('-PexpTime=')) { if (!extracted) extracted = p.slice(10); return false }
       return true
     })
-    m.extraArgs = kept.join(' ')
+    m.buildCmd = kept.join(' ')
   }
   if (extracted && !env.expTime) env.expTime = extracted
   return env
@@ -105,7 +144,8 @@ async function loadEnvs() {
   for (const e of raw) {
     if (isNewSchema(e)) {
       const r = e
-      if (!Array.isArray(r.modules) || r.modules.some(m => m?.extraArgs?.toString().includes('-PexpTime='))) migrated = true
+      if (!Array.isArray(r.modules) || r.modules.some(m => m && (m.gradleTask !== undefined || m.extraArgs?.toString().includes('-PexpTime=')))) migrated = true
+      if (!Array.isArray(r.sshs)) migrated = true // env.ssh 单对象 → sshs 数组
       out.push(normalizeEnv(r))
       continue
     }
@@ -156,9 +196,8 @@ export function validateFrontEnv(s) {
 export function frontEnvFile(e, m) {
   const p = (e.projectPath || defaultProjectPath || '').replace(/[\\/]+$/, '')
   if (!p) return null
-  const key = m.key ? '.' + m.key : ''
-  if (m.id === 'bsFront') return path.join(p, 'client/client-front', `.env${key}`)
-  if (m.id === 'adminFront') return path.join(p, 'admin/admin-front', `.env${key}`)
+  if (m.id === 'bsFront') return path.join(p, 'client/client-front', '.env')
+  if (m.id === 'adminFront') return path.join(p, 'admin/admin-front', '.env')
   return null
 }
 
@@ -171,12 +210,32 @@ export function validateEnv(e) {
   if (BAD_PATH.test(e.projectPath)) errs.push('项目路径含非法字符（禁止空格/引号/; & | ` $ 等）')
   if (e.jdkHome && !isAbsPath(e.jdkHome)) errs.push('JDK 路径必须是绝对路径')
   if (e.jdkHome && BAD_PATH.test(e.jdkHome)) errs.push('JDK 路径含非法字符')
-  const s = e.ssh
-  if (!/^[a-zA-Z0-9.-]+$/.test(s.host)) errs.push('SSH host 非法（仅字母/数字/./-）')
-  if (!Number.isInteger(s.port) || s.port < 1 || s.port > 65535) errs.push('SSH port 必须是 1-65535 的整数')
-  if (!/^[a-zA-Z0-9._-]+$/.test(s.user)) errs.push('SSH user 非法')
-  if (BAD_CMD.test(s.options)) errs.push('SSH 自定义选项含非法字符')
-  if (s.password.includes('\n')) errs.push('SSH 密码不能包含换行')
+  if (e.nodeHome && !isAbsPath(e.nodeHome)) errs.push('Node 路径必须是绝对路径')
+  if (e.nodeHome && BAD_PATH.test(e.nodeHome)) errs.push('Node 路径含非法字符')
+  if (e.nodeOptions && BAD_CMD.test(e.nodeOptions)) errs.push('Node options 含非法字符')
+  if (e.pmPath && !isAbsPath(e.pmPath)) errs.push('包管理器路径必须是绝对路径（如 /opt/homebrew/bin/pnpm）')
+  if (e.pmPath && BAD_PATH.test(e.pmPath)) errs.push('包管理器路径含非法字符')
+  if (e.buildEnv) {
+    const be = validateFrontEnv(e.buildEnv)
+    if (be) errs.push('构建环境变量：' + be)
+  }
+  const sshList = Array.isArray(e.sshs) && e.sshs.length ? e.sshs : []
+  if (!sshList.length) errs.push('至少需要一个 SSH 目标')
+  const seenSshId = {}
+  for (const s of sshList) {
+    const tag = s.name || s.id
+    if (!/^[A-Za-z0-9-]+$/.test(s.id)) errs.push(`SSH 目标「${tag}」: ID 只能包含字母/数字/连字符`)
+    else if (seenSshId[s.id]) errs.push(`SSH 目标「${tag}」: ID「${s.id}」重复`)
+    seenSshId[s.id] = true
+    if (!s.name.trim()) errs.push('SSH 目标显示名必填')
+    if (!/^[a-zA-Z0-9.-]+$/.test(s.host)) errs.push(`SSH 目标「${tag}」: host 非法（仅字母/数字/./-）`)
+    if (!Number.isInteger(s.port) || s.port < 1 || s.port > 65535) errs.push(`SSH 目标「${tag}」: port 必须是 1-65535 的整数`)
+    if (!/^[a-zA-Z0-9._-]+$/.test(s.user)) errs.push(`SSH 目标「${tag}」: user 非法`)
+    if (BAD_CMD.test(s.options)) errs.push(`SSH 目标「${tag}」: 自定义选项含非法字符`)
+    if (s.password.includes('\n')) errs.push(`SSH 目标「${tag}」: 密码不能包含换行`)
+    if (s.keyFile && !isAbsPath(s.keyFile)) errs.push(`SSH 目标「${tag}」: 私钥路径必须是绝对路径`)
+    if (s.keyFile && BAD_PATH.test(s.keyFile)) errs.push(`SSH 目标「${tag}」: 私钥路径含非法字符`)
+  }
   if (e.expTime && !/^\d{4}-\d{2}-\d{2}$/.test(e.expTime)) errs.push('过期时间必须是 YYYY-MM-DD')
   if (!Array.isArray(e.modules) || !e.modules.length) errs.push('至少需要一个模块')
   const seenId = {}
@@ -197,9 +256,9 @@ export function validateEnv(e) {
       } catch { errs.push(`${m.name || m.id}: 健康检查 URL 必须是 HTTP/HTTPS 地址，且不能包含用户名或密码`) }
     }
     if (!m.enabled) continue
-    if (!/^[a-zA-Z0-9:_-]+$/.test(m.gradleTask)) errs.push(`${m.name || m.id}: gradle 任务非法`)
-    if (m.key && !/^[a-zA-Z0-9._-]+$/.test(m.key)) errs.push(`${m.name || m.id}: -Pkey 非法`)
-    if (m.extraArgs && BAD_CMD.test(m.extraArgs)) errs.push(`${m.name || m.id}: 额外参数含非法字符`)
+    if (m.sshId && !sshList.some((s) => s.id === m.sshId)) errs.push(`${m.name || m.id}: SSH 目标「${m.sshId}」不存在`)
+    if (!m.buildCmd.trim()) errs.push(`${m.name || m.id}: 构建命令必填（如 ./gradlew …、mvn …、npm run build）`)
+    else if (BAD_CMD.test(m.buildCmd)) errs.push(`${m.name || m.id}: 构建命令含非法字符（禁止引号/; & | \` $ 等）`)
     if (!m.localPath) errs.push(`${m.name || m.id}: 本地产物路径必填`)
     else if (BAD_PATH.test(m.localPath)) errs.push(`${m.name || m.id}: 本地产物路径含非法字符`)
     if (!m.remotePath) errs.push(`${m.name || m.id}: 远程目标路径必填`)

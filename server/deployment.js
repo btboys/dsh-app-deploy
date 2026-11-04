@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
-import { promises as fsp } from 'node:fs'
+import { promises as fsp, existsSync } from 'node:fs'
 import path from 'node:path'
-import { getEnvs } from './config.js'
+import { getEnvs, targetFor } from './config.js'
 import { getHistory, saveHistory, LOGTAIL_CHARS } from './history.js'
 import { listWorktrees, which, rcloneObscure } from './local-tools.js'
 import { checkHealth } from './health-check.js'
@@ -79,10 +79,54 @@ function runStep(label, args, opts = {}) {
   })
 }
 
+// 测试 SSH 连通性：BatchMode 禁止交互询问（密码仍走 sshpass），10 秒超时；返回 { ok, ms?, error? }
+export async function testSsh(target) {
+  if (!/^[a-zA-Z0-9.-]+$/.test(target.host || '')) return { ok: false, error: 'host 非法' }
+  if (!/^[a-zA-Z0-9._-]+$/.test(target.user || '')) return { ok: false, error: 'user 非法' }
+  const port = Number(target.port) || 22
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: 'port 非法' }
+  const args = ['-p', String(port), '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new']
+  // BatchMode 禁止交互询问，但会同时禁掉密码提示导致 sshpass 失效——仅无密码（密钥/agent）时使用
+  if (!target.password) args.push('-o', 'BatchMode=yes')
+  if (target.keyFile) args.push('-i', target.keyFile)
+  if (target.options) args.push(...String(target.options).trim().split(/\s+/).filter(Boolean))
+  args.push(`${target.user}@${target.host}`, 'true')
+  let cmd = 'ssh', cargs = args, env = process.env
+  if (target.password) {
+    if (!(await which('sshpass'))) return { ok: false, error: '本机未安装 sshpass，无法以密码测试（留空密码改用密钥/agent 测试）' }
+    cmd = 'sshpass'
+    cargs = ['-e', 'ssh', ...args]
+    env = { ...process.env, SSHPASS: target.password }
+  }
+  const start = Date.now()
+  return new Promise((resolve) => {
+    let child
+    try {
+      child = spawn(cmd, cargs, { env, shell: IS_WIN, stdio: ['ignore', 'ignore', 'pipe'] })
+    } catch (err) {
+      return resolve({ ok: false, error: String(err) })
+    }
+    let errOut = ''
+    const timer = setTimeout(() => {
+      child.kill()
+      resolve({ ok: false, error: '连接超时（10s）' })
+    }, 10000)
+    child.stderr.on('data', (c) => { errOut += c.toString('utf8') })
+    child.once('error', (err) => { clearTimeout(timer); resolve({ ok: false, error: String(err) }) })
+    child.once('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) resolve({ ok: true, ms: Date.now() - start })
+      else resolve({ ok: false, error: (errOut.trim().split('\n').pop() || `退出码 ${code}`).slice(0, 300) })
+    })
+  })
+}
+
 // 部署结束后尽力停掉 Gradle daemon：daemon 是常驻 JVM（默认空闲 3 小时才退出），
 // 多次构建复用后类加载器/缓存累积会把堆耗尽（报 "Daemon will expire ... running out of JVM heap space"）。
 // 无 daemon 时 --stop 也返回 0；任何失败都忽略，不影响部署结果。
 async function stopGradleDaemon(env) {
+  // 非 gradle 项目没有 wrapper，跳过（也避免误播"已停止"）
+  if (!existsSync(path.join(env.projectPath, IS_WIN ? 'gradlew.bat' : 'gradlew'))) return
   try {
     const stopEnv = env.jdkHome ? { ...process.env, JAVA_HOME: env.jdkHome } : process.env
     await new Promise((resolve) => {
@@ -178,35 +222,54 @@ async function cleanBuildDir(env, m) {
 
 // 组装 rclone 同步参数（SFTP 后端）：sync 自带 --delete 用于前端镜像，copy 不删用于服务端；
 // 密码用 obscure 混淆值（只进 spawn 参数，不进日志标签）；密钥取 SSH 自定义选项里的 -i
-export function buildRcloneArgs(env, m, local, rclone) {
+export function buildRcloneArgs(target, m, local, rclone) {
   const isFront = m.kind === 'front'
   const args = [isFront ? 'sync' : 'copy', local, `:sftp:${m.remotePath}`,
-    '--sftp-host', env.ssh.host, '--sftp-port', String(env.ssh.port), '--sftp-user', env.ssh.user,
+    '--sftp-host', target.host, '--sftp-port', String(target.port), '--sftp-user', target.user,
     '--stats-one-line', '--stats', '10s', '-v']
   if (isFront) args.push('--exclude', '.user.ini') // 宝塔锁定文件；exclude 同时豁免 sync 的删除
-  if (rclone.pass) args.push('--sftp-pass', rclone.pass)
-  const key = (env.ssh.options || '').match(/(?:^|\s)-i\s+(\S+)/)
-  if (!rclone.pass && key) args.push('--sftp-key-file', key[1])
+  // 密码：优先按目标密码查 obscure 缓存（多目标部署），否则用调用方直接给的 pass
+  const pass = (rclone.cache && target.password) ? rclone.cache.get(target.password) : rclone.pass
+  if (pass) args.push('--sftp-pass', pass)
+  // 私钥：专用 keyFile 字段优先，兼容旧的 options 里 -i 写法
+  const key = target.keyFile || ((target.options || '').match(/(?:^|\s)-i\s+(\S+)/) || [])[1]
+  // 与 ssh/rsync 路径行为一致：私钥可与密码同时存在（rclone 自身会依次尝试）
+  if (key) args.push('--sftp-key-file', key)
   return args
 }
 
 // 返回退出码与失败阶段（清理/构建/同步/远程命令），用于执行记录
 // rclone 非空时用 rclone（SFTP）替代 rsync 同步；rsyncEnv 同时承载 sshpass 的 SSHPASS
-export async function deployModule(env, m, sshBase, dest, sshpass, rclone = null) {
+// target 为模块选中的 SSH 目标（env.sshs 之一）
+export async function deployModule(env, m, target, sshpass, rclone = null) {
+  const sshBase = `ssh -p ${target.port}${target.keyFile ? ' -i ' + target.keyFile : ''}${target.options ? ' ' + target.options : ''}`
+  const dest = `${target.user}@${target.host}`
   // 0. 清理构建目录（恢复原 update-*.sh 行为）
   const c0 = await cleanBuildDir(env, m)
   if (c0 !== 0) return { code: c0, step: '清理' }
 
-  // 1. 构建
-  const buildArgs = [GRADLEW, m.gradleTask]
-  if (m.key) buildArgs.push(`-Pkey=${m.key}`)
-  if (m.extraArgs) buildArgs.push(...m.extraArgs.trim().split(/\s+/).filter(Boolean))
-  if (m.kind === 'server' && env.expTime) buildArgs.push(`-PexpTime=${env.expTime}`)
-  const jdkNote = env.jdkHome ? `（JAVA_HOME=${env.jdkHome}）` : ''
-  const envForGradle = env.jdkHome ? { ...process.env, JAVA_HOME: env.jdkHome } : { ...process.env }
-  // 前端模块：把 frontEnv（KEY=VALUE 多行）注入子进程 env；Vite loadEnv 对 process.env 中 VITE_ 前缀变量优先级最高，会覆盖 .env 文件
-  if (m.kind === 'front') {
-    for (const line of (m.frontEnv || '').split('\n')) {
+  // 1. 构建：通用命令（./gradlew…/mvn…/npm run build…），按空白切分；校验已禁引号与 shell 元字符，无需 shell 拼接
+  const buildArgs = m.buildCmd.trim().split(/\s+/).filter(Boolean)
+  // Windows 上 ./gradlew 无法经 cmd 解析，回退为 gradlew.bat
+  if (IS_WIN && buildArgs[0] === './gradlew') buildArgs[0] = 'gradlew.bat'
+  if (m.kind === 'server' && env.expTime && buildArgs[0].includes('gradle')) buildArgs.push(`-PexpTime=${env.expTime}`)
+  const jdkNote = [env.jdkHome ? `JAVA_HOME=${env.jdkHome}` : '', env.nodeHome ? `Node=${env.nodeHome}` : ''].filter(Boolean).join('，')
+  const noteSuffix = jdkNote ? `（${jdkNote}）` : ''
+  const envForGradle = { ...process.env }
+  if (env.jdkHome) envForGradle.JAVA_HOME = env.jdkHome
+  if (env.nodeHome) {
+    // nodeHome 允许指向安装目录或 bin 目录；加入 PATH 后 npm/npx/node 均可用
+    const bin = /[\\/]bin$/.test(env.nodeHome) ? env.nodeHome : path.join(env.nodeHome, 'bin')
+    envForGradle.PATH = `${bin}${IS_WIN ? ';' : ':'}${envForGradle.PATH || ''}`
+  }
+  if (env.pmPath) {
+    // 包管理器（pnpm/yarn 全局 bin 常在 Node 目录之外）：所在目录加入 PATH 首位
+    envForGradle.PATH = `${path.dirname(env.pmPath)}${IS_WIN ? ';' : ':'}${envForGradle.PATH || ''}`
+  }
+  if (env.nodeOptions) envForGradle.NODE_OPTIONS = env.nodeOptions
+  // 注入 KEY=VALUE 行到构建子进程 env；先环境级 buildEnv，后模块级 frontEnv（后者覆盖前者）
+  const injectEnv = (text) => {
+    for (const line of (text || '').split('\n')) {
       const t = line.trim()
       if (!t || t.startsWith('#')) continue
       const eq = t.indexOf('=')
@@ -215,7 +278,10 @@ export async function deployModule(env, m, sshBase, dest, sshpass, rclone = null
       if (/^[A-Za-z0-9_]+$/.test(k)) envForGradle[k] = v
     }
   }
-  const c1 = await runStep(`[${m.name}] 构建: ${buildArgs.join(' ')} ${jdkNote}`, buildArgs, { cwd: env.projectPath, env: envForGradle, shell: IS_WIN })
+  injectEnv(env.buildEnv)
+  // 前端模块：frontEnv 注入；Vite loadEnv 对 process.env 中 VITE_ 前缀变量优先级最高，会覆盖 .env 文件
+  if (m.kind === 'front') injectEnv(m.frontEnv)
+  const c1 = await runStep(`[${m.name}] 构建: ${buildArgs.join(' ')} ${noteSuffix}`, buildArgs, { cwd: env.projectPath, env: envForGradle, shell: IS_WIN })
   if (c1 !== 0) { broadcast(`[${m.name}] 构建失败，退出码 ${c1}，中止部署\n`); return { code: c1, step: '构建' } }
 
   // 2. 同步：优先 rsync；本机没有时回退 rclone（--delete 仅用于前端模块，与原脚本行为一致）
@@ -224,10 +290,10 @@ export async function deployModule(env, m, sshBase, dest, sshpass, rclone = null
   const isDirLike = /[\\/]$/.test(m.localPath)
   const joined = path.isAbsolute(m.localPath) ? m.localPath : path.join(env.projectPath, m.localPath)
   const local = joined.replace(/[\\/]+$/, '') + (isDirLike ? '/' : '')
-  const rsyncEnv = sshpass ? { ...process.env, SSHPASS: env.ssh.password } : process.env
+  const rsyncEnv = sshpass ? { ...process.env, SSHPASS: target.password } : process.env
   let c2
   if (rclone) {
-    const args = buildRcloneArgs(env, m, local, rclone)
+    const args = buildRcloneArgs(target, m, local, rclone)
     c2 = await runStep(`[${m.name}] rclone ${isFront ? 'sync' : 'copy'} ${local} → :sftp:${m.remotePath}${isFront ? '（镜像 --delete）' : ''}`, [rclone.bin, ...args], {})
   } else {
     const rsyncArgs = ['rsync', '-r', '-t', '-z', '-e', sshpass ? `sshpass -e ${sshBase}` : sshBase]
@@ -241,8 +307,9 @@ export async function deployModule(env, m, sshBase, dest, sshpass, rclone = null
   if (m.postCommand.trim()) {
     const sshArgs = []
     if (sshpass) sshArgs.push('sshpass', '-e')
-    sshArgs.push('ssh', '-p', String(env.ssh.port))
-    if (env.ssh.options) sshArgs.push(...env.ssh.options.trim().split(/\s+/).filter(Boolean))
+    sshArgs.push('ssh', '-p', String(target.port))
+    if (target.keyFile) sshArgs.push('-i', target.keyFile)
+    if (target.options) sshArgs.push(...target.options.trim().split(/\s+/).filter(Boolean))
     sshArgs.push(dest, m.postCommand.trim())
     const c3 = await runStep(`[${m.name}] 远程执行: ${m.postCommand.trim()}`, sshArgs, { env: rsyncEnv })
     if (c3 !== 0) { broadcast(`[${m.name}] 远程命令失败，退出码 ${c3}，中止部署\n`); return { code: c3, step: '远程命令' } }
@@ -261,11 +328,13 @@ async function runDeployment(env, mods) {
     const hasRsync = await which('rsync')
     const rcloneBin = hasRsync ? null : await which('rclone')
     const needSsh = mods.some(m => m.enabled && m.postCommand.trim())
+    // 每个启用的模块按其 sshId 解析发布目标（env.sshs 之一）
+    const usedTargets = [...new Set(mods.filter(m => m.enabled).map(m => targetFor(env, m)))]
     const missing = []
     if (!hasRsync && !rcloneBin) missing.push('rsync（或 rclone）')
     if ((hasRsync || needSsh) && !(await which('ssh'))) missing.push('ssh')
     // sshpass：rsync 密码传输恒需要；rclone 模式自身支持密码，仅「密码 + 远程命令」时才需要
-    const needSshpass = !!env.ssh.password && (hasRsync || needSsh)
+    const needSshpass = usedTargets.some(t => t.password) && (hasRsync || needSsh)
     const sshpass = needSshpass ? await which('sshpass') : null
     if (missing.length) {
       broadcast(`错误: 本机未找到 ${missing.join('、')}（须在 PATH 中）。${IS_WIN ? 'Windows 可安装 rclone 替代 rsync（https://rclone.org），ssh 用系统自带 OpenSSH' : '请先安装 rsync（或 rclone）与 OpenSSH'}\n`)
@@ -276,23 +345,26 @@ async function runDeployment(env, mods) {
         : '错误: 配置了 SSH 密码但本机没有 sshpass。请先安装: brew install hudochenkov/sshpass/sshpass\n')
       code = 127
     } else {
-      const sshBase = `ssh -p ${env.ssh.port}${env.ssh.options ? ' ' + env.ssh.options : ''}`
-      const dest = `${env.ssh.user}@${env.ssh.host}`
-      // rclone 密码认证走 obscure 混淆值（失败立即中止，避免到同步步骤才报错）
+      // rclone 密码认证走 obscure 混淆值（按密码缓存，多目标各自处理；失败立即中止）
+      const passCache = new Map()
       let rclone = null
       if (rcloneBin) {
-        const pass = env.ssh.password ? await rcloneObscure(rcloneBin, env.ssh.password) : null
-        if (env.ssh.password && !pass) {
-          broadcast('错误: rclone obscure 密码处理失败，无法使用密码认证\n')
-          code = 127
-          return finishDeploy(code) // 尚未构建，无需停 daemon
-        }
-        rclone = { bin: rcloneBin, pass }
+        rclone = { bin: rcloneBin, pass: null, cache: passCache }
       }
       code = 0
       for (const m of mods) {
         if (!m.enabled) { broadcast(`[跳过] ${m.name} 已禁用\n`); continue }
-        const res = await deployModule(env, m, sshBase, dest, sshpass, rclone)
+        const target = targetFor(env, m)
+        if (rclone && target.password && !passCache.has(target.password)) {
+          const pass = await rcloneObscure(rcloneBin, target.password)
+          if (!pass) {
+            broadcast(`错误: rclone obscure 密码处理失败（目标 ${target.name}），无法使用密码认证\n`)
+            code = 127
+            break
+          }
+          passCache.set(target.password, pass)
+        }
+        const res = await deployModule(env, m, target, target.password ? sshpass : null, rclone)
         if (res.code !== 0) {
           if (running?.record) { running.record.failedModule = m.name; running.record.failedStep = res.step }
           code = res.code
@@ -332,7 +404,9 @@ export async function handleDeploy(req, res, url) {
   const ordered = env.modules.filter(m => m.enabled && want.has(m.id))
   const mods = orderIds.map(id => ordered.find(m => m.id === id)).filter(m => !!m)
   if (!mods.length) return bad('所选模块在环境中均不可用或已禁用')
-  if (!env.ssh.host || !env.ssh.user) return bad('SSH 配置不完整')
+  // 所选模块涉及的 SSH 目标都必须有 host/user
+  const runTargets = [...new Set(mods.map(m => targetFor(env, m)))]
+  if (runTargets.some(t => !t.host || !t.user)) return bad('SSH 目标配置不完整')
 
   const sseHeaders = { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' }
   const lastEventId = req.headers['last-event-id']

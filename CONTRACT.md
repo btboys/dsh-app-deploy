@@ -59,8 +59,9 @@ dataDir/
 | `deleteEnv` | `{ id: string }` | `{ envs: Env[] }` |
 | `importEnvs` | `{ content: string }`（JSON 文本：`Env[]` 或 `{ envs: Env[] }`） | `{ envs: Env[], added: string[], overwritten: string[], warning?: string }`；同 ID 覆盖本地、其余追加；任一环境校验失败 → `ok:false` 且不写盘 |
 | `frontEnv` | `{ env: string, module: string }` | `{ text: string }`（front 模块 frontEnv 为空时读 `.env` 参考文本，绝不写回） |
-| `jdks` | – | `Array<{ label: string, path: string }>` |
-| `browse` | `{ path?: string, hidden?: boolean }` | `{ path, parent, dirs: string[], worktrees: Worktree[] }`；路径非法/不可读 → `ok:false` |
+| `jdks` / `nodes` / `packageManagers` | – | `Array<{ label: string, path: string }>` |
+| `sshTest` | `{ target: { host, port, user, password?, keyFile?, options? } }` | `{ ok: boolean, ms?: number, error?: string }`；BatchMode 仅无密码时用（避免 sshpass 失效），10s 超时 |
+| `browse` | `{ path?: string, hidden?: boolean, file?: boolean }` | `{ path, parent, dirs: string[], worktrees: Worktree[], files?: string[] }`；`file:true` 时额外列出普通文件供选择（如私钥）；支持 `~/` 开头路径；非法/不可读 → `ok:false` |
 | `git` | `{ env: string, path?: string }` | `{ ok: boolean, isGit?: boolean, branch?: string, shortCommit?: string, detached?: boolean, worktrees: Worktree[] }` |
 | `history` | `{ env?: string, limit?: number }` | `DeployRecord[]`（时间倒序；limit 默认 50，上限 500） |
 | `clearHistory` | – | `{ ok: true }`（保留进行中的记录） |
@@ -89,15 +90,25 @@ type ModKind = 'front' | 'server'
 
 interface ModuleCfg {
   id: string; name: string; kind: ModKind; enabled: boolean
-  gradleTask: string; key: string; extraArgs: string
+  buildCmd: string // 通用构建命令，如 ./gradlew … / mvn -DskipTests package / npm run build
+  sshId: string // 发布目标（env.sshs 之一），空 = 第一个目标
   localPath: string; remotePath: string; postCommand: string
   healthCheckUrl?: string; frontEnv: string
 }
 
+interface SshTarget {
+  id: string; name: string; host: string; port: number; user: string
+  password: string; keyFile: string // 私钥绝对路径，空 = 默认密钥/agent，优先于 options 里的 -i
+  options: string
+}
+
 interface Env {
   id: string; name: string; note: string; group: string
-  projectPath: string; jdkHome: string; expTime: string
-  ssh: { host: string; port: number; user: string; password: string; options: string }
+  projectPath: string; jdkHome: string; nodeHome: string; nodeOptions: string
+  pmPath: string // 包管理器可执行文件绝对路径，构建时其目录加入 PATH 首位，空 = 跟随 PATH
+  buildEnv: string // 环境级 KEY=VALUE 多行，构建时注入所有模块（模块 frontEnv 覆盖同名字段）
+  expTime: string
+  sshs: SshTarget[] // 至少一个；旧格式 env.ssh 单对象自动迁移为单元素数组
   modules: ModuleCfg[]
 }
 
@@ -113,13 +124,16 @@ interface DeployRecord {
 
 ### 2.5 Host 行为（从旧项目移植，不新增功能）
 
-- `server/config.js`：类型归一化（旧 record schema → modules 数组、`-PexpTime` 抽到 `env.expTime`）、
-  分组默认值、校验（`BAD_PATH`/`BAD_CMD`/frontEnv/healthCheckUrl 等，照抄）、`saveEnv` 时若配了密码但本机无 sshpass 给 `warning`。
-- `server/deployment.js`：构建前清理 → `./gradlew <task> [-Pkey] [extra] [-PexpTime]` → `rsync`（front 加 `--delete --exclude=.user.ini`）→ `ssh postCommand` → 健康检查；
-  任一步非零中止并记录 `failedModule/failedStep`；结束停 `./gradlew --stop`。
+- `server/config.js`：类型归一化（旧 record schema → modules 数组、`-PexpTime` 抽到 `env.expTime`、
+  旧 gradle 三字段 gradleTask/key/extraArgs → `buildCmd`、旧 `env.ssh` 单对象 → `sshs` 数组）、
+  分组默认值、校验（`BAD_PATH`/`BAD_CMD`/frontEnv/buildEnv/healthCheckUrl 等）、`saveEnv` 时若任一目标配了密码但本机无 sshpass 给 `warning`。
+- `server/deployment.js`：构建前清理 → 执行模块 `buildCmd`（首 token 含 gradle 的 server 模块自动追加 `-PexpTime`，Windows 下 `./gradlew` 回退 `gradlew.bat`；
+  构建 env 依次注入 JAVA_HOME / Node PATH / 包管理器 PATH / NODE_OPTIONS / env.buildEnv / 模块 frontEnv）→ `rsync`（front 加 `--delete --exclude=.user.ini`）→ `ssh postCommand` → 健康检查；
+  每个模块按其 `sshId` 解析目标（`targetFor`，空回落第一个）；密钥 keyFile 与密码可同时使用；
+  任一步非零中止并记录 `failedModule/failedStep`；结束若项目存在 gradlew 则停 `./gradlew --stop`。
   子进程用 `node:child_process.spawn`，`stdout/stderr` 流式 `broadcast`。
   `sshpass` 检测用 `execFile('which', ['sshpass'])` 或等价方案；有密码时 `rsync/ssh` 走 `sshpass -e`，密码只放 `SSHPASS` 环境变量。
-- `server/local-tools.js`：git worktree 列表 / git 分支信息 / JDK 探测 / 目录浏览（照抄旧逻辑，Bun API 换 Node）。
+- `server/local-tools.js`：git worktree 列表 / git 分支信息 / JDK/Node/包管理器探测 / 目录与文件浏览（Bun API 换 Node）。
 - `server/history.js`：读写 `history.json`；启动时把残留 `running` 标为 `aborted`；500 条裁剪。
 - `server/health-check.js`：HTTP 2xx + `success === true` + `code === 200`，单次 5s，间隔 3s，总 120s。
 
@@ -164,11 +178,12 @@ window.__ModuleLoader__.load({
 
 1. **环境列表**：按 `group` 分组（未分组在最后），选中态；卡片显示 id·note、`user@host:port`、最后构建时间/状态；
    每卡「复制」「删除」。顶部「+ 添加环境」。
-2. **环境编辑**：基本项（名称/ID(新增可改)/备注/分组/项目路径/JDK/expTime）、SSH（host/port/user/password/options）、
-   模块卡片列表（显示名/类型/ID/启用/gradle 任务/-Pkey/额外参数/本地路径/远程路径/postCommand/健康检查 URL/front 模块的 frontEnv 多行文本）；
+2. **环境编辑**：基本项（名称/ID(新增可改)/备注/分组/项目路径/JDK/Node 路径/Node options/包管理器路径/构建环境变量/expTime）、
+   SSH 目标列表（名称/ID/host/port/user/密码/私钥路径(可浏览选择)/自定义选项，每个目标带「测试连接」按钮，可增删）、
+   模块卡片列表（显示名/类型/ID/启用/构建命令(左侧构建工具下拉)/SSH 目标/本地路径/远程路径/postCommand/健康检查 URL/front 模块的 frontEnv 多行文本）；
    增删模块；「保存环境」「删除此环境」；保存后用返回的 `envs` 刷新。
-3. **路径选择**：项目路径「浏览…」弹层（`browse` RPC：目录列表、上级、选择当前、显示隐藏目录开关、worktree 快捷跳转）。
-4. **JDK 下拉**：聚焦 JDK 输入框时展示 `jdks` 列表，点选填入。
+3. **路径选择**：项目路径「浏览…」弹层（`browse` RPC：目录列表、上级、选择当前、显示隐藏目录开关、worktree 快捷跳转）；私钥路径用 `file:true` 文件选择模式，从 `~/.ssh` 起步。
+4. **JDK/Node/包管理器 下拉**：聚焦对应输入框时展示 `jdks`/`nodes`/`packageManagers` 列表，点选填入；构建命令左侧另有构建工具（Gradle/Maven/npm/pnpm/yarn）下拉，选中填充命令模板。
 5. **Git 信息条**：选中环境后读 `git`；显示分支/短 hash/生效路径；仓库有多个 worktree 时提供下拉选择**临时构建路径**（不写回配置，仅本次会话）。
 6. **部署区**：启用模块多选（勾选/取消/全选/清空）、「执行顺序」列表可拖拽排序、可单独移除；
    「执行部署」弹确认框（环境、模块顺序、每个模块的构建/rsync/ssh 计划），确认后开 EventSource 推日志；

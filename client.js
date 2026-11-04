@@ -74,7 +74,7 @@ window.__ModuleLoader__.load({
       while (modules.some((m) => m.id === 'mod' + n)) n++
       return {
         id: 'mod' + n, name: '新模块', kind: 'front', enabled: true,
-        gradleTask: '', key: '', extraArgs: '', localPath: '', remotePath: '',
+        buildCmd: '', sshId: '', localPath: '', remotePath: '',
         postCommand: '', healthCheckUrl: '', frontEnv: '',
       }
     }
@@ -82,14 +82,21 @@ window.__ModuleLoader__.load({
       return {
         id: m.id || '', name: m.name || '', kind: m.kind === 'server' ? 'server' : 'front',
         enabled: m.enabled !== false,
-        gradleTask: m.gradleTask || '', key: m.key || '', extraArgs: m.extraArgs || '',
+        buildCmd: m.buildCmd || '', sshId: m.sshId || '',
         localPath: m.localPath || '', remotePath: m.remotePath || '', postCommand: m.postCommand || '',
         healthCheckUrl: m.healthCheckUrl || '', frontEnv: m.frontEnv || '',
       }
     }
+    // 模块的发布目标（与服务端 config.js targetFor 同规则：sshId 落空→第一个目标）
+    function targetOf(env, m) {
+      const list = (env && env.sshs) || []
+      return list.find((s) => s.id === (m && m.sshId)) || list[0] || {}
+    }
+
     function normalizeEnv(env) {
       const e = clone(env || {})
-      const ssh = e.ssh || {}
+      // 旧格式 env.ssh 单对象自动迁移为 sshs 数组
+      const rawSshs = Array.isArray(e.sshs) && e.sshs.length ? e.sshs : (e.ssh ? [e.ssh] : [])
       return {
         id: e.id || '',
         name: e.name || '',
@@ -97,11 +104,17 @@ window.__ModuleLoader__.load({
         group: e.group || '',
         projectPath: e.projectPath || '',
         jdkHome: e.jdkHome || '',
+        nodeHome: e.nodeHome || '',
+        nodeOptions: e.nodeOptions || '',
+        pmPath: e.pmPath || '',
+        buildEnv: e.buildEnv || '',
         expTime: e.expTime || '',
-        ssh: {
-          host: ssh.host || '', port: Number(ssh.port) || 22, user: ssh.user || 'root',
-          password: ssh.password || '', options: ssh.options || '',
-        },
+        sshs: rawSshs.map((s, i) => ({
+          id: s.id || (i === 0 ? 'default' : 'ssh' + (i + 1)),
+          name: s.name || (i === 0 ? '默认' : 'SSH ' + (i + 1)),
+          host: s.host || '', port: Number(s.port) || 22, user: s.user || 'root',
+          password: s.password || '', keyFile: s.keyFile || '', options: s.options || '',
+        })),
         modules: (e.modules || []).map(normalizeModule),
       }
     }
@@ -127,9 +140,40 @@ window.__ModuleLoader__.load({
         children)
     }
 
+    // 路径下拉选择器（JDK / Node 共用）：输入框 + 候选项弹层
+    function PathPicker({ value, aria, items, open, wrapRef, onFocus, onChange, onPick, emptyText }) {
+      return h('div', { className: 'dad-jdkwrap', ref: wrapRef },
+        h('input', {
+          className: 'dad-input', type: 'text', value, 'aria-label': aria, onFocus,
+          onChange: (ev) => onChange(ev.target.value),
+        }),
+        open ? h('div', { className: 'dad-jdkdd' },
+          items.length
+            ? items.map((j) => h('button', {
+              key: j.path, type: 'button', className: 'dad-jitem',
+              onClick: () => onPick(j.path),
+            },
+              h('span', { className: 'dad-jlbl' }, j.label),
+              h('span', { className: 'dad-jfull' }, j.path)))
+            : h('div', { className: 'dad-jempty' }, emptyText)) : null)
+    }
+
+    // 构建工具预设：选中即填充构建命令（可再手动编辑）
+    const BUILD_PRESETS = [
+      { tool: 'Gradle', cmd: './gradlew' },
+      { tool: 'Maven', cmd: 'mvn -DskipTests package' },
+      { tool: 'npm', cmd: 'npm run build' },
+      { tool: 'pnpm', cmd: 'pnpm run build' },
+      { tool: 'yarn', cmd: 'yarn build' },
+    ]
+
     function EnvCard({ env, selected, lastBuild, onSelect, onCopy, onDelete }) {
       const lb = lastBuild[env.id]
-      const ssh = env.ssh || {}
+      const sshList = env.sshs || []
+      const ssh = sshList[0] || {}
+      const sshText = ssh.host
+        ? (ssh.user || 'root') + '@' + ssh.host + ':' + (ssh.port || 22) + (sshList.length > 1 ? ' 等 ' + sshList.length + ' 个目标' : '')
+        : 'SSH 未配置'
       return h('div', {
         className: 'dad-env',
         'data-sel': selected ? '1' : '0',
@@ -142,7 +186,7 @@ window.__ModuleLoader__.load({
             h('i', { className: 'dad-dot' + (lb ? ' st-' + lb.status : ''), 'aria-hidden': true }),
             env.name || env.id),
           h('span', { className: 'dad-sub' }, env.id + (env.note ? ' · ' + env.note : '')),
-          h('span', { className: 'dad-sub' }, ssh.host ? (ssh.user || 'root') + '@' + ssh.host + ':' + (ssh.port || 22) : 'SSH 未配置'),
+          h('span', { className: 'dad-sub' }, sshText),
           h('span', { className: 'dad-sub dad-build' + (lb ? ' ' + lb.status : '') },
             h('i', { className: 'dad-dot', 'aria-hidden': true }),
             lb ? '最后构建: ' + fmtTime(lb.time) + '（' + (HSTATUS[lb.status] || lb.status) + '）' : '最后构建: 从未')),
@@ -205,11 +249,11 @@ window.__ModuleLoader__.load({
           nodes))
     }
 
-    function ModuleCard({ mod, onChange, onDelete }) {
+    function ModuleCard({ mod, onChange, onDelete, sshs }) {
       const envFile = mod.id === 'bsFront' ? 'client/client-front/.env'
         : mod.id === 'adminFront' ? 'admin/admin-front/.env' : ''
       const feLabel = 'frontEnv（KEY=VALUE 多行，构建时注入'
-        + (envFile ? ' ' + envFile + (mod.key ? '.' + mod.key : '') : '') + '）'
+        + (envFile ? ' ' + envFile : '') + '）'
       return h('div', { className: 'dad-mcard', 'data-off': mod.enabled ? '0' : '1' },
         h('button', {
           type: 'button', className: 'dad-btndel', title: '删除模块', 'aria-label': '删除模块',
@@ -239,21 +283,19 @@ window.__ModuleLoader__.load({
               onChange: (ev) => onChange('enabled', ev.target.checked),
             }), '启用')),
         h('div', { className: 'dad-row' },
-          h(Field, { label: 'gradle 任务' },
-            h('input', {
-              className: 'dad-input', type: 'text', value: mod.gradleTask, 'aria-label': 'gradle 任务',
-              onChange: (ev) => onChange('gradleTask', ev.target.value),
-            })),
-          h(Field, { label: '-Pkey（可空）' },
-            h('input', {
-              className: 'dad-input', type: 'text', value: mod.key, 'aria-label': '-Pkey',
-              onChange: (ev) => onChange('key', ev.target.value),
-            })),
-          h(Field, { label: '额外参数（如 -PexpTime=…）' },
-            h('input', {
-              className: 'dad-input', type: 'text', value: mod.extraArgs, 'aria-label': '额外参数',
-              onChange: (ev) => onChange('extraArgs', ev.target.value),
-            }))),
+          h(Field, { label: '构建命令（可左侧选工具自动填充，再手动补任务/参数）', wide: true },
+            h('div', { className: 'dad-inline' },
+              h('select', {
+                className: 'dad-select', 'aria-label': '构建工具',
+                value: (BUILD_PRESETS.find((p) => p.cmd === (mod.buildCmd || '').trim()) || {}).cmd || '',
+                onChange: (ev) => { if (ev.target.value) onChange('buildCmd', ev.target.value) },
+              },
+                h('option', { value: '' }, '构建工具…'),
+                BUILD_PRESETS.map((p) => h('option', { key: p.cmd, value: p.cmd }, p.tool))),
+              h('input', {
+                className: 'dad-input', type: 'text', value: mod.buildCmd, 'aria-label': '构建命令',
+                onChange: (ev) => onChange('buildCmd', ev.target.value),
+              })))),
         h('div', { className: 'dad-row' },
           h(Field, { label: '本地产物路径' },
             h('input', {
@@ -264,7 +306,13 @@ window.__ModuleLoader__.load({
             h('input', {
               className: 'dad-input', type: 'text', value: mod.remotePath, 'aria-label': '远程目标路径',
               onChange: (ev) => onChange('remotePath', ev.target.value),
-            }))),
+            })),
+          h(Field, { label: 'SSH 目标' },
+            h('select', {
+              className: 'dad-select', value: mod.sshId || '', 'aria-label': 'SSH 目标',
+              onChange: (ev) => onChange('sshId', ev.target.value),
+            },
+              (sshs || []).map((s) => h('option', { key: s.id, value: s.id }, s.name || s.id))))),
         h('div', { className: 'dad-row' },
           h(Field, { label: '部署后远程命令（可空）' },
             h('input', {
@@ -292,12 +340,15 @@ window.__ModuleLoader__.load({
     function EnvForm({
       env, isNew, groups, message, open, onToggle,
       onPatch, onPatchSsh, onPatchModule, onAddModule, onDeleteModule,
-      onSave, onDelete, onBrowse,
+      onSave, onDelete, onBrowse, onBrowseKey,
+      onAddSsh, onDeleteSsh, onTestSsh, sshTest,
       jdks, jdkOpen, jdkRef, onJdkFocus, onJdkPick,
+      nodes, nodeOpen, nodeRef, nodeErr, onNodeFocus, onNodePick,
+      pms, pmOpen, pmRef, pmErr, onPmFocus, onPmPick,
     }) {
       const title = env ? '环境配置' : '选择左侧环境进行编辑'
       const groupOptions = groups.map((g) => h('option', { key: g, value: g }))
-      const ssh = env ? env.ssh : { host: '', port: 22, user: '', password: '', options: '' }
+      const sshList = env ? (env.sshs || []) : []
       return h('div', { className: 'dad-card' },
         h('div', { className: 'dad-card-head' },
           h('span', { className: 'dad-card-title', title }, title),
@@ -345,20 +396,37 @@ window.__ModuleLoader__.load({
                     }),
                     h('button', { type: 'button', className: 'dad-btn', onClick: onBrowse }, '浏览…'))),
                 h(Field, { label: 'JDK 路径（JAVA_HOME，可留空）', wide: true },
-                  h('div', { className: 'dad-jdkwrap', ref: jdkRef },
-                    h('input', {
-                      className: 'dad-input', type: 'text', value: env.jdkHome, 'aria-label': 'JDK 路径',
-                      onFocus: onJdkFocus, onChange: (ev) => onPatch({ jdkHome: ev.target.value }),
-                    }),
-                    jdkOpen ? h('div', { className: 'dad-jdkdd' },
-                      jdks.length
-                        ? jdks.map((j) => h('button', {
-                          key: j.path, type: 'button', className: 'dad-jitem',
-                          onClick: () => onJdkPick(j.path),
-                        },
-                          h('span', { className: 'dad-jlbl' }, j.label),
-                          h('span', { className: 'dad-jfull' }, j.path)))
-                        : h('div', { className: 'dad-jempty' }, '未发现可用 JDK')) : null))),
+                  h(PathPicker, {
+                    value: env.jdkHome, aria: 'JDK 路径', items: jdks, open: jdkOpen, wrapRef: jdkRef,
+                    onFocus: onJdkFocus, onChange: (v) => onPatch({ jdkHome: v }), onPick: onJdkPick,
+                    emptyText: '未发现可用 JDK',
+                  }))),
+              h('div', { className: 'dad-row' },
+                h(Field, { label: 'Node 路径（构建时加入 PATH，可留空）', wide: true },
+                  h(PathPicker, {
+                    value: env.nodeHome || '', aria: 'Node 路径', items: nodes, open: nodeOpen, wrapRef: nodeRef,
+                    onFocus: onNodeFocus, onChange: (v) => onPatch({ nodeHome: v }), onPick: onNodePick,
+                    emptyText: nodeErr || '未发现已装 Node（支持 nvm / n / fnm / volta）',
+                  })),
+                h(Field, { label: 'Node options（NODE_OPTIONS，可留空）' },
+                  h('input', {
+                    className: 'dad-input', type: 'text', value: env.nodeOptions || '', 'aria-label': 'Node options',
+                    onChange: (ev) => onPatch({ nodeOptions: ev.target.value }),
+                  }))),
+              h('div', { className: 'dad-row' },
+                h(Field, { label: '包管理器路径（如 …/pnpm，构建时加入 PATH，可留空）', wide: true },
+                  h(PathPicker, {
+                    value: env.pmPath || '', aria: '包管理器路径', items: pms, open: pmOpen, wrapRef: pmRef,
+                    onFocus: onPmFocus, onChange: (v) => onPatch({ pmPath: v }), onPick: onPmPick,
+                    emptyText: pmErr || '未发现 pnpm / yarn（npm 随 Node 自动可用）',
+                  }))),
+              h('div', { className: 'dad-row' },
+                h(Field, { label: '构建环境变量（KEY=VALUE 多行，构建时注入所有模块，可留空）', wide: true },
+                  h('textarea', {
+                    className: 'dad-textarea', rows: 3, spellCheck: false, value: env.buildEnv || '',
+                    'aria-label': '构建环境变量',
+                    onChange: (ev) => onPatch({ buildEnv: ev.target.value }),
+                  }))),
               h('div', { className: 'dad-row' },
                 h(Field, { label: '过期时间 expTime（YYYY-MM-DD，可留空）' },
                   h('input', {
@@ -366,44 +434,81 @@ window.__ModuleLoader__.load({
                     onChange: (ev) => onPatch({ expTime: ev.target.value }),
                   })))),
             h('div', { className: 'dad-sec' },
-              h('div', { className: 'dad-sec-title' }, 'SSH'),
+              h('div', { className: 'dad-sec-title' }, 'SSH 目标（模块可选发布到任一目标）'),
+              sshList.map((s, i) => {
+                const t = (sshTest || {})[i]
+                return h('div', { key: s.id || i, className: 'dad-sshtarget' },
+                  h('div', { className: 'dad-row' },
+                    h(Field, { label: '目标名称' },
+                      h('input', {
+                        className: 'dad-input', type: 'text', value: s.name, 'aria-label': 'SSH 目标名称',
+                        onChange: (ev) => onPatchSsh(i, { name: ev.target.value }),
+                      })),
+                    h(Field, { label: 'ID（字母/数字/连字符）' },
+                      h('input', {
+                        className: 'dad-input', type: 'text', value: s.id, 'aria-label': 'SSH 目标 ID',
+                        onChange: (ev) => onPatchSsh(i, { id: ev.target.value }),
+                      })),
+                    sshList.length > 1
+                      ? h('button', {
+                        type: 'button', className: 'dad-btndel', title: '删除目标', 'aria-label': '删除 SSH 目标',
+                        onClick: () => onDeleteSsh(i),
+                      }, '×')
+                      : null),
+                  h('div', { className: 'dad-row' },
+                    h(Field, { label: 'Host' },
+                      h('input', {
+                        className: 'dad-input', type: 'text', value: s.host, 'aria-label': 'SSH Host',
+                        onChange: (ev) => onPatchSsh(i, { host: ev.target.value }),
+                      })),
+                    h(Field, { label: 'Port' },
+                      h('input', {
+                        className: 'dad-input', type: 'number', value: s.port, 'aria-label': 'SSH Port',
+                        onChange: (ev) => onPatchSsh(i, { port: ev.target.value }),
+                      })),
+                    h(Field, { label: 'User' },
+                      h('input', {
+                        className: 'dad-input', type: 'text', value: s.user, 'aria-label': 'SSH User',
+                        onChange: (ev) => onPatchSsh(i, { user: ev.target.value }),
+                      }))),
+                  h('div', { className: 'dad-row' },
+                    h(Field, { label: '密码（留空=ssh-agent/密钥）' },
+                      h('input', {
+                        className: 'dad-input', type: 'password', value: s.password, 'aria-label': 'SSH 密码',
+                        autoComplete: 'new-password',
+                        onChange: (ev) => onPatchSsh(i, { password: ev.target.value }),
+                      })),
+                    h(Field, { label: '私钥路径（留空=默认密钥/agent，优先于选项里的 -i）', wide: true },
+                      h('div', { className: 'dad-inline' },
+                        h('input', {
+                          className: 'dad-input', type: 'text', value: s.keyFile || '', 'aria-label': '私钥路径',
+                          onChange: (ev) => onPatchSsh(i, { keyFile: ev.target.value }),
+                        }),
+                        h('button', { type: 'button', className: 'dad-btn', onClick: () => onBrowseKey(i) }, '浏览…')))),
+                  h('div', { className: 'dad-row' },
+                    h(Field, { label: '自定义 ssh 选项（如 -o StrictHostKeyChecking=no）', wide: true },
+                      h('input', {
+                        className: 'dad-input', type: 'text', value: s.options, 'aria-label': '自定义 ssh 选项',
+                        onChange: (ev) => onPatchSsh(i, { options: ev.target.value }),
+                      }))),
+                  h('div', { className: 'dad-inline' },
+                    h('button', {
+                      type: 'button', className: 'dad-btn', onClick: () => onTestSsh(i),
+                      disabled: t && t.state === 'run',
+                    }, t && t.state === 'run' ? '测试中…' : '测试连接'),
+                    t && t.state !== 'run'
+                      ? h('span', { className: 'dad-msg ' + (t.state === 'ok' ? 'ok' : 'err') }, t.text)
+                      : null))
+              }),
               h('div', { className: 'dad-row' },
-                h(Field, { label: 'Host' },
-                  h('input', {
-                    className: 'dad-input', type: 'text', value: ssh.host, 'aria-label': 'SSH Host',
-                    onChange: (ev) => onPatchSsh({ host: ev.target.value }),
-                  })),
-                h(Field, { label: 'Port' },
-                  h('input', {
-                    className: 'dad-input', type: 'number', value: ssh.port, 'aria-label': 'SSH Port',
-                    onChange: (ev) => onPatchSsh({ port: ev.target.value }),
-                  })),
-                h(Field, { label: 'User' },
-                  h('input', {
-                    className: 'dad-input', type: 'text', value: ssh.user, 'aria-label': 'SSH User',
-                    onChange: (ev) => onPatchSsh({ user: ev.target.value }),
-                  }))),
-              h('div', { className: 'dad-row' },
-                h(Field, { label: '密码（留空=ssh-agent/密钥）' },
-                  h('input', {
-                    className: 'dad-input', type: 'password', value: ssh.password, 'aria-label': 'SSH 密码',
-                    autoComplete: 'new-password',
-                    onChange: (ev) => onPatchSsh({ password: ev.target.value }),
-                  })),
-                h(Field, { label: '自定义 ssh 选项（如 -o StrictHostKeyChecking=no）', wide: true },
-                  h('input', {
-                    className: 'dad-input', type: 'text', value: ssh.options, 'aria-label': '自定义 ssh 选项',
-                    onChange: (ev) => onPatchSsh({ options: ev.target.value }),
-                  }))),
+                h('button', { type: 'button', className: 'dad-btn', onClick: onAddSsh }, '+ 添加 SSH 目标')),
               h('div', { className: 'dad-hint' },
-                ssh.password
-                  ? '已配置密码，部署时将使用 sshpass（密码不会写入日志）'
-                  : '密码留空时使用本机 ssh-agent / 密钥认证')),
+                '密码留空时使用本机 ssh-agent / 密钥认证；密码只经 sshpass 环境变量传递，不会写入日志')),
             h('div', { className: 'dad-sec' },
               h('div', { className: 'dad-sec-title' }, '构建 / 发布模块'),
               env.modules.length === 0 ? h('div', { className: 'dad-hint' }, '（暂无模块）') : null,
               env.modules.map((m, i) => h(ModuleCard, {
-                key: i, mod: m,
+                key: i, mod: m, sshs: sshList,
                 onChange: (field, value) => onPatchModule(i, field, value),
                 onDelete: () => onDeleteModule(i),
               })),
@@ -470,14 +575,14 @@ window.__ModuleLoader__.load({
             }, state.confirmLabel || '确定'))))
     }
 
-    function BrowseModal({ state, onClose, onNavigate, onUp, onPick, onToggleHidden }) {
+    function BrowseModal({ state, onClose, onNavigate, onUp, onPick, onSelectFile, onToggleHidden }) {
       return h('div', { className: 'dad-mask', role: 'presentation', onClick: onClose },
         h('div', {
-          className: 'dad-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': '选择目录',
+          className: 'dad-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': state.file ? '选择文件' : '选择目录',
           onClick: (ev) => ev.stopPropagation(),
         },
           h('div', { className: 'dad-modal-head' },
-            h('strong', null, '选择目录'),
+            h('strong', null, state.file ? '选择文件' : '选择目录'),
             h('label', { className: 'dad-chk dad-autoflex' },
               h('input', {
                 type: 'checkbox', checked: !!state.hidden,
@@ -506,16 +611,29 @@ window.__ModuleLoader__.load({
               (state.dirs || []).map((dir) => h('button', {
                 key: dir, type: 'button', className: 'dad-dir',
                 onClick: () => onNavigate(dir),
-              }, dir)))),
+              }, dir))),
+            state.file
+              ? h('div', { className: 'dad-dirs' },
+                (state.files || []).length ? null : h('div', { className: 'dad-hint' }, '（无文件）'),
+                (state.files || []).map((f) => h('button', {
+                  key: f, type: 'button', className: 'dad-dir', 'data-sel': state.sel === f ? '1' : '0',
+                  onClick: () => onSelectFile(f),
+                }, f)))
+              : null),
           h('div', { className: 'dad-modal-foot' },
             h('button', {
               type: 'button', className: 'dad-btn', onClick: onUp,
               disabled: state.loading || !state.path || state.path === '/',
             }, '上级'),
-            h('button', {
-              type: 'button', className: 'dad-btn dad-btn-primary', onClick: onPick,
-              disabled: state.loading || !state.path,
-            }, '选择当前目录'))))
+            state.file
+              ? h('button', {
+                type: 'button', className: 'dad-btn dad-btn-primary', onClick: onPick,
+                disabled: state.loading || !state.path || !state.sel,
+              }, '选择此文件')
+              : h('button', {
+                type: 'button', className: 'dad-btn dad-btn-primary', onClick: onPick,
+                disabled: state.loading || !state.path,
+              }, '选择当前目录'))))
     }
 
     // ---------- 主面板 ----------
@@ -535,6 +653,17 @@ window.__ModuleLoader__.load({
       const [jdkOpen, setJdkOpen] = useState(false)
       const jdkRef = useRef(null)
 
+      const [nodes, setNodes] = useState([])
+      const [nodeErr, setNodeErr] = useState('')
+
+      const [pms, setPms] = useState([])
+      const [pmErr, setPmErr] = useState('')
+      const [pmOpen, setPmOpen] = useState(false)
+      const pmRef = useRef(null)
+      const [sshTest, setSshTest] = useState({}) // { [目标index]: { state: 'run'|'ok'|'err', text } }
+      const [nodeOpen, setNodeOpen] = useState(false)
+      const nodeRef = useRef(null)
+
       const [browse, setBrowse] = useState(null)
 
       const [selected, setSelected] = useState([])
@@ -552,6 +681,7 @@ window.__ModuleLoader__.load({
       const logRef = useRef(null)
       const esRef = useRef(null)
       const importRef = useRef(null)
+      const keyPickRef = useRef(null) // 文件浏览弹窗的选中回调（私钥选择用）
       const dragIdRef = useRef(null)
       const [draggingId, setDraggingId] = useState('')
       const [dragOverId, setDragOverId] = useState('')
@@ -681,16 +811,17 @@ window.__ModuleLoader__.load({
         if (el) el.scrollTop = el.scrollHeight
       }, [logText])
 
-      // JDK 下拉：点击空白处关闭
+      // JDK/Node/包管理器 下拉：点击空白处关闭
       useEffect(() => {
-        if (!jdkOpen) return undefined
+        if (!jdkOpen && !nodeOpen && !pmOpen) return undefined
         function onDocDown(ev) {
-          const el = jdkRef.current
-          if (el && !el.contains(ev.target)) setJdkOpen(false)
+          if (jdkOpen && jdkRef.current && !jdkRef.current.contains(ev.target)) setJdkOpen(false)
+          if (nodeOpen && nodeRef.current && !nodeRef.current.contains(ev.target)) setNodeOpen(false)
+          if (pmOpen && pmRef.current && !pmRef.current.contains(ev.target)) setPmOpen(false)
         }
         document.addEventListener('mousedown', onDocDown)
         return () => document.removeEventListener('mousedown', onDocDown)
-      }, [jdkOpen])
+      }, [jdkOpen, nodeOpen, pmOpen])
 
       // ---------- 环境操作 ----------
 
@@ -702,8 +833,8 @@ window.__ModuleLoader__.load({
       function addEnv() {
         const env = {
           id: newEnvId(envs), name: '新环境', note: '', group: '',
-          projectPath: defProject, jdkHome: '', expTime: '',
-          ssh: { host: '', port: 22, user: 'root', password: '', options: '' },
+          projectPath: defProject, jdkHome: '', nodeHome: '', nodeOptions: '', pmPath: '', buildEnv: '', expTime: '',
+          sshs: [{ id: 'default', name: '默认', host: '', port: 22, user: 'root', password: '', keyFile: '', options: '' }],
           modules: [],
         }
         setDraft(env)
@@ -836,8 +967,43 @@ window.__ModuleLoader__.load({
       function patchEnv(patch) {
         setDraft((prev) => (prev ? { ...prev, ...patch } : prev))
       }
-      function patchSsh(patch) {
-        setDraft((prev) => (prev ? { ...prev, ssh: { ...prev.ssh, ...patch } } : prev))
+      function patchSsh(index, patch) {
+        setDraft((prev) => (prev
+          ? { ...prev, sshs: (prev.sshs || []).map((s, i) => (i === index ? { ...s, ...patch } : s)) }
+          : prev))
+      }
+      function addSsh() {
+        setDraft((prev) => {
+          if (!prev) return prev
+          const n = (prev.sshs || []).length + 1
+          return {
+            ...prev,
+            sshs: [...(prev.sshs || []), { id: 'ssh-' + Date.now().toString(36), name: 'SSH ' + n, host: '', port: 22, user: 'root', password: '', keyFile: '', options: '' }],
+          }
+        })
+      }
+      function deleteSsh(index) {
+        setDraft((prev) => (prev && (prev.sshs || []).length > 1
+          ? { ...prev, sshs: prev.sshs.filter((_, i) => i !== index) }
+          : prev))
+      }
+      // 测试连接：直接用表单当前值（无需先保存环境）
+      function runSshTest(index) {
+        const t = draft && draft.sshs && draft.sshs[index]
+        if (!t) return
+        setSshTest((p) => ({ ...p, [index]: { state: 'run', text: '测试中…' } }))
+        rpc('sshTest', {
+          target: {
+            host: (t.host || '').trim(), port: Number(t.port) || 22,
+            user: (t.user || '').trim() || 'root', password: t.password || '',
+            keyFile: (t.keyFile || '').trim(), options: (t.options || '').trim(),
+          },
+        })
+          .then((r) => setSshTest((p) => ({
+            ...p,
+            [index]: r && r.ok ? { state: 'ok', text: '连接成功（' + r.ms + ' ms）' } : { state: 'err', text: '失败：' + ((r && r.error) || '未知错误') },
+          })))
+          .catch((e) => setSshTest((p) => ({ ...p, [index]: { state: 'err', text: '失败：' + String(e?.message || e) } })))
       }
       function patchModule(index, field, value) {
         setDraft((prev) => {
@@ -879,22 +1045,28 @@ window.__ModuleLoader__.load({
           group: (draft.group || '').trim(),
           projectPath: (draft.projectPath || '').trim() || defProject,
           jdkHome: (draft.jdkHome || '').trim(),
+          nodeHome: (draft.nodeHome || '').trim(),
+          nodeOptions: (draft.nodeOptions || '').trim(),
+          pmPath: (draft.pmPath || '').trim(),
+          buildEnv: draft.buildEnv || '',
           expTime: draft.expTime || '',
-          ssh: {
-            host: (draft.ssh.host || '').trim(),
-            port: Number(draft.ssh.port) || 22,
-            user: (draft.ssh.user || '').trim() || 'root',
-            password: draft.ssh.password || '',
-            options: (draft.ssh.options || '').trim(),
-          },
+          sshs: (draft.sshs || []).map((s) => ({
+            id: (s.id || '').trim(),
+            name: (s.name || '').trim(),
+            host: (s.host || '').trim(),
+            port: Number(s.port) || 22,
+            user: (s.user || '').trim() || 'root',
+            password: s.password || '',
+            keyFile: (s.keyFile || '').trim(),
+            options: (s.options || '').trim(),
+          })),
           modules: draft.modules.map((m) => ({
             id: (m.id || '').trim(),
             name: (m.name || '').trim() || '新模块',
             kind: m.kind === 'server' ? 'server' : 'front',
             enabled: !!m.enabled,
-            gradleTask: (m.gradleTask || '').trim(),
-            key: (m.key || '').trim(),
-            extraArgs: (m.extraArgs || '').trim(),
+            buildCmd: (m.buildCmd || '').trim(),
+            sshId: (m.sshId || '').trim(),
             localPath: (m.localPath || '').trim(),
             remotePath: (m.remotePath || '').trim(),
             postCommand: (m.postCommand || '').trim(),
@@ -916,30 +1088,36 @@ window.__ModuleLoader__.load({
 
       // ---------- 路径浏览 ----------
 
-      function loadBrowse(path, hidden) {
+      function loadBrowse(path, hidden, file) {
         setBrowse((prev) => ({
           path: prev ? prev.path : '',
           parent: prev ? prev.parent : '',
           dirs: prev ? prev.dirs : [],
           worktrees: prev ? prev.worktrees : [],
+          files: prev && prev.file === !!file ? prev.files : [],
+          file: !!file, sel: '',
           hidden: !!hidden, loading: true, error: '',
         }))
         const args = {}
         if (path) args.path = path
         if (hidden) args.hidden = true
+        if (file) args.file = true
         rpc('browse', args).then((d) => {
           setBrowse({
             path: (d && d.path) || '',
             parent: (d && d.parent) || parentPath((d && d.path) || ''),
             dirs: Array.isArray(d && d.dirs) ? d.dirs : [],
+            files: Array.isArray(d && d.files) ? d.files : [],
             worktrees: Array.isArray(d && d.worktrees) ? d.worktrees : [],
+            file: !!file, sel: '',
             hidden: !!hidden, loading: false, error: '',
           })
         }).catch((error) => {
           setBrowse((prev) => ({
             path: prev ? prev.path : '',
             parent: prev ? prev.parent : '',
-            dirs: [], worktrees: [],
+            dirs: [], worktrees: [], files: [],
+            file: !!file, sel: '',
             hidden: !!hidden, loading: false,
             error: error.message || String(error),
           }))
@@ -947,24 +1125,39 @@ window.__ModuleLoader__.load({
       }
       function openBrowse() {
         if (!draft) return
-        loadBrowse((draft.projectPath || '').trim(), false)
+        keyPickRef.current = null
+        loadBrowse((draft.projectPath || '').trim(), false, false)
+      }
+      // 选择私钥文件：从当前 keyFile 所在目录（或 ~/.ssh）起步，默认显示隐藏文件（密钥多为点开头无，但 .ssh 是隐藏目录）
+      function openKeyBrowse(index) {
+        const t = draft && draft.sshs && draft.sshs[index]
+        keyPickRef.current = (p) => patchSsh(index, { keyFile: p })
+        loadBrowse(t && t.keyFile ? parentPath(t.keyFile) : '~/.ssh', true, true)
       }
       function navigateBrowse(target) {
         if (!browse) return
-        loadBrowse(joinPath(browse.path, target), browse.hidden)
+        loadBrowse(joinPath(browse.path, target), browse.hidden, browse.file)
       }
       function browseUp() {
         if (!browse) return
-        loadBrowse(browse.parent || parentPath(browse.path), browse.hidden)
+        loadBrowse(browse.parent || parentPath(browse.path), browse.hidden, browse.file)
       }
       function browsePick() {
         if (!browse || !browse.path) return
-        patchEnv({ projectPath: browse.path })
+        if (browse.file) {
+          if (!browse.sel) return
+          if (keyPickRef.current) keyPickRef.current(joinPath(browse.path, browse.sel))
+        } else {
+          patchEnv({ projectPath: browse.path })
+        }
         setBrowse(null)
+      }
+      function browseSelectFile(name) {
+        setBrowse((prev) => (prev ? { ...prev, sel: name } : prev))
       }
       function browseToggleHidden(hidden) {
         if (!browse) return
-        loadBrowse(browse.path, hidden)
+        loadBrowse(browse.path, hidden, browse.file)
       }
 
       // ---------- JDK ----------
@@ -978,6 +1171,32 @@ window.__ModuleLoader__.load({
       function pickJdk(path) {
         patchEnv({ jdkHome: path })
         setJdkOpen(false)
+      }
+
+      // ---------- Node ----------
+
+      function openNode() {
+        setNodeOpen(true)
+        if (!nodes.length) {
+          rpc('nodes').then((list) => setNodes(Array.isArray(list) ? list : [])).catch((e) => setNodeErr(String(e?.message || e)))
+        }
+      }
+      function pickNode(path) {
+        patchEnv({ nodeHome: path })
+        setNodeOpen(false)
+      }
+
+      // ---------- 包管理器 ----------
+
+      function openPm() {
+        setPmOpen(true)
+        if (!pms.length) {
+          rpc('packageManagers').then((list) => setPms(Array.isArray(list) ? list : [])).catch((e) => setPmErr(String(e?.message || e)))
+        }
+      }
+      function pickPm(path) {
+        patchEnv({ pmPath: path })
+        setPmOpen(false)
       }
 
       // ---------- 部署 ----------
@@ -1015,11 +1234,13 @@ window.__ModuleLoader__.load({
         lines.push('')
         lines.push('将依次执行:')
         for (const m of mods) {
-          const exp = m.kind === 'server' && env.expTime ? ' -PexpTime=' + env.expTime : ''
+          // expTime 追加规则与服务端一致：仅首 token 是 gradle 的 server 模块
+          const exp = m.kind === 'server' && env.expTime && ((m.buildCmd || '').trim().split(/\s+/)[0] || '').includes('gradle') ? ' -PexpTime=' + env.expTime : ''
           lines.push('')
           lines.push('[' + (m.name || m.id) + ']')
-          lines.push('  构建: gradlew ' + m.gradleTask + (m.key ? ' -Pkey=' + m.key : '') + (m.extraArgs ? ' ' + m.extraArgs : '') + exp)
-          lines.push('  rsync: ' + m.localPath + ' → ' + env.ssh.user + '@' + env.ssh.host + ':' + m.remotePath)
+          const target = targetOf(env, m)
+          lines.push('  构建: ' + m.buildCmd + exp)
+          lines.push('  rsync: ' + m.localPath + ' → ' + (target.user || 'root') + '@' + (target.host || '?') + ':' + m.remotePath + (env.sshs && env.sshs.length > 1 ? '（目标: ' + (target.name || target.id) + '）' : ''))
           if (m.postCommand) lines.push('  ssh: ' + m.postCommand)
         }
         return lines.join('\n')
@@ -1028,8 +1249,12 @@ window.__ModuleLoader__.load({
       function requestDeploy() {
         if (!draft || !selected.length) return
         if (isNew) { setDeployState({ running: false, text: '请先保存环境再执行部署', kind: 'err' }); return }
-        if (!draft.ssh.host || !draft.ssh.user) {
-          setDeployState({ running: false, text: '该环境 SSH 配置不完整，请先保存 SSH 配置', kind: 'err' })
+        const deployTargets = [...new Set(selected.map((id) => {
+          const m = moduleById[id]
+          return m && targetOf(draft, m)
+        }).filter(Boolean))]
+        if (!deployTargets.length || deployTargets.some((t) => !t.host || !t.user)) {
+          setDeployState({ running: false, text: '所选模块的 SSH 目标配置不完整，请先保存 SSH 配置', kind: 'err' })
           return
         }
         const mods = selected.map((id) => moduleById[id]).filter((m) => m && m.enabled)
@@ -1126,7 +1351,7 @@ window.__ModuleLoader__.load({
       const canRun = !!draft && !isNew && selected.length > 0 && !deployState.running
 
       // 标题行：对象名 + 一句「现状」（ID / 最近部署结果 / SSH 目标），全部来自已有数据
-      const selSsh = draft && draft.ssh ? draft.ssh : {}
+      const selSsh = draft && draft.sshs && draft.sshs[0] ? draft.sshs[0] : {}
       const selSshText = selSsh.host ? (selSsh.user || 'root') + '@' + selSsh.host + ':' + (selSsh.port || 22) : ''
       const selBuild = draft ? lastBuild[draft.id] : null
       let titleSub = '选择左侧环境，或新增一个环境'
@@ -1285,13 +1510,16 @@ window.__ModuleLoader__.load({
             onToggle: () => setFormOpen((v) => !v),
             onPatch: patchEnv, onPatchSsh: patchSsh, onPatchModule: patchModule,
             onAddModule: addModule, onDeleteModule: askDeleteModule,
-            onSave: saveEnv, onDelete: deleteCurrentEnv, onBrowse: openBrowse,
+            onAddSsh: addSsh, onDeleteSsh: deleteSsh, onTestSsh: runSshTest, sshTest,
+            onSave: saveEnv, onDelete: deleteCurrentEnv, onBrowse: openBrowse, onBrowseKey: openKeyBrowse,
             jdks, jdkOpen, jdkRef, onJdkFocus: openJdk, onJdkPick: pickJdk,
+            nodes, nodeOpen, nodeRef, nodeErr, onNodeFocus: openNode, onNodePick: pickNode,
+            pms, pmOpen, pmRef, pmErr, onPmFocus: openPm, onPmPick: pickPm,
           })),
         confirmState ? h(ConfirmDialog, { state: confirmState, onClose: () => setConfirmState(null) }) : null,
         browse ? h(BrowseModal, {
           state: browse, onClose: () => setBrowse(null),
-          onNavigate: navigateBrowse, onUp: browseUp, onPick: browsePick,
+          onNavigate: navigateBrowse, onUp: browseUp, onPick: browsePick, onSelectFile: browseSelectFile,
           onToggleHidden: browseToggleHidden,
         }) : null)
     }
@@ -1378,6 +1606,7 @@ window.__ModuleLoader__.load({
       '.dad-btn-danger-solid:hover:not(:disabled){background:var(--dsw-alias-state-error-primary)}',
       '.dad-formfoot{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:4px}',
       '.dad-mcard{position:relative;min-width:0;padding:10px 12px;margin-bottom:10px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-2)}',
+      '.dad-sshtarget{position:relative;min-width:0;padding:8px 10px 10px;margin-bottom:8px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1)}',
       '.dad-mcard[data-off="1"]{opacity:.6}',
       '.dad-btndel{position:absolute;top:4px;right:6px;border:0;background:none;color:var(--dsw-alias-label-tertiary);font-size:14px;line-height:1;padding:2px 4px;cursor:pointer}',
       '.dad-btndel:hover{color:var(--dsw-alias-state-error-primary)}',
