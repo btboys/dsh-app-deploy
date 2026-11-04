@@ -138,6 +138,8 @@ export function getDefaultProjectPath() { return defaultProjectPath }
 
 // ---------- 校验 ----------
 const BAD_PATH = /[\s;"'`$&|<>()*?[\]{}!]/ // 禁止空格/引号/; & | ` $ 等
+// 绝对路径：posix 以 / 开头，Windows 为盘符 + \ 或 /（如 C:\jdk、D:/proj）
+const isAbsPath = (p) => /^(\/|[a-zA-Z]:[\\/])/.test(p)
 const BAD_CMD = /["'`;&|<>$()*?[\]{}!]/ // 允许空格，其余同上
 
 // 前端 .env 文本：只允许 KEY=VALUE（KEY 为 A-Z0-9_）、空行、# 注释
@@ -152,11 +154,11 @@ export function validateFrontEnv(s) {
 
 // 前端 .env 文件路径（仅种子 bsFront/adminFront 有约定路径，供「配置为空时读文件作参考」）
 export function frontEnvFile(e, m) {
-  const p = (e.projectPath || defaultProjectPath || '').replace(/\/+$/, '')
+  const p = (e.projectPath || defaultProjectPath || '').replace(/[\\/]+$/, '')
   if (!p) return null
   const key = m.key ? '.' + m.key : ''
-  if (m.id === 'bsFront') return `${p}/client/client-front/.env${key}`
-  if (m.id === 'adminFront') return `${p}/admin/admin-front/.env${key}`
+  if (m.id === 'bsFront') return path.join(p, 'client/client-front', `.env${key}`)
+  if (m.id === 'adminFront') return path.join(p, 'admin/admin-front', `.env${key}`)
   return null
 }
 
@@ -165,9 +167,9 @@ export function validateEnv(e) {
   if (!/^[a-z0-9-]+$/.test(e.id)) errs.push('ID 只能是小写字母/数字/连字符')
   if (!e.name.trim()) errs.push('名称必填')
   if (e.group && !/^[\u4e00-\u9fa5A-Za-z0-9 -]{1,20}$/.test(e.group)) errs.push('分组只能含中文/字母/数字/空格/连字符，最长 20 字符')
-  if (!e.projectPath.startsWith('/')) errs.push('项目路径必须是绝对路径')
+  if (!isAbsPath(e.projectPath)) errs.push('项目路径必须是绝对路径（如 /opt/proj 或 C:\\proj）')
   if (BAD_PATH.test(e.projectPath)) errs.push('项目路径含非法字符（禁止空格/引号/; & | ` $ 等）')
-  if (e.jdkHome && !e.jdkHome.startsWith('/')) errs.push('JDK 路径必须是绝对路径')
+  if (e.jdkHome && !isAbsPath(e.jdkHome)) errs.push('JDK 路径必须是绝对路径')
   if (e.jdkHome && BAD_PATH.test(e.jdkHome)) errs.push('JDK 路径含非法字符')
   const s = e.ssh
   if (!/^[a-zA-Z0-9.-]+$/.test(s.host)) errs.push('SSH host 非法（仅字母/数字/./-）')

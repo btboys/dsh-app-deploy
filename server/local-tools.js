@@ -16,11 +16,20 @@ function run(cmd, args, options = {}) {
   })
 }
 
-// 等价旧 Bun.which：找到返回绝对路径，找不到返回 null
+const IS_WIN = process.platform === 'win32'
+
+// 等价旧 Bun.which：找到返回绝对路径，找不到返回 null（Windows 用 where）
 export async function which(command) {
-  const { code, stdout } = await run('which', [command])
-  const found = stdout.trim()
+  const { code, stdout } = await run(IS_WIN ? 'where' : 'which', [command])
+  const found = stdout.split('\n')[0].trim()
   return code === 0 && found ? found : null
+}
+
+// rclone obscure 密码混淆（--sftp-pass 只接受混淆值）；失败返回 null
+export async function rcloneObscure(bin, password) {
+  const { code, stdout } = await run(bin, ['obscure', password])
+  const v = stdout.trim()
+  return code === 0 && v ? v : null
 }
 
 // 列出目录所在 git 仓库的全部 worktree（含主工作区）；非 git 仓库/失败返回空数组
@@ -98,16 +107,32 @@ export async function listJdks() {
       for (const v of vers) found.add(path.join(vdir, v, 'libexec/openjdk.jdk/Contents/Home'))
     }
   } catch {}
+  // Windows：JAVA_HOME + 常见厂商安装目录（Oracle / Temurin / Microsoft / Zulu / Corretto）
+  if (IS_WIN) {
+    if (process.env.JAVA_HOME) found.add(process.env.JAVA_HOME)
+    const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean)
+    const vendors = ['Java', 'Eclipse Adoptium', 'Eclipse Foundation', 'Microsoft', 'Zulu', 'Amazon Corretto']
+    for (const root of roots) {
+      for (const vendor of vendors) {
+        try { for (const n of await fsp.readdir(path.join(root, vendor))) found.add(path.join(root, vendor, n)) } catch {}
+      }
+    }
+  }
   // 只保留 bin/java 真实存在者，生成友好短名
   const jdks = []
-  for (const p of found) if (await fileExists(`${p}/bin/java`)) {
-    const m = p.match(/\/JavaVirtualMachines\/([^/]+)\.jdk\/Contents\/Home$/)
+  for (const p of found) if (await fileExists(path.join(p, 'bin', IS_WIN ? 'java.exe' : 'java'))) {
+    // 标签推导统一用正斜杠视图（Windows 反斜杠路径也能复用同一套正则）
+    const pv = p.replace(/\\/g, '/')
+    const m = pv.match(/\/JavaVirtualMachines\/([^/]+)\.jdk\/Contents\/Home$/)
     let label
     if (m) label = (m[1].match(/\d+(?:\.\d+)*/) || [])[1] || m[1]
-    else if (p.includes('/opt/homebrew/')) {
-      const v = (p.match(/openjdk@?(\d+)/) || [])[1] || (p.match(/\/(\d+(?:\.\d+)+)\/libexec/) || [])[1]
+    else if (pv.includes('/opt/homebrew/')) {
+      const v = (pv.match(/openjdk@?(\d+)/) || [])[1] || (pv.match(/\/(\d+(?:\.\d+)+)\/libexec/) || [])[1]
       label = v ? 'homebrew-' + v : 'homebrew'
-    } else label = p.split('/').filter(Boolean).pop()
+    } else if (/^[a-zA-Z]:\//.test(pv)) {
+      const segs = pv.split('/').filter(Boolean)
+      label = segs.pop() || pv
+    } else label = pv.split('/').filter(Boolean).pop()
     jdks.push({ label, path: p })
   }
   // 短名去重：同名者追加版本/opt-cellar 段区分
@@ -139,7 +164,7 @@ export async function listJdks() {
 export async function browseDirectory(args = {}) {
   let p = typeof args.path === 'string' ? args.path : ''
   const showHidden = args.hidden === true || args.hidden === '1' || args.hidden === 1
-  if (!p) p = process.env.HOME || '/'
+  if (!p) p = process.env.HOME || (IS_WIN ? (process.env.USERPROFILE || 'C:\\') : '/')
   if (!path.isAbsolute(p)) throw new Error('必须为绝对路径')
   p = path.resolve(p)
   try {

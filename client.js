@@ -48,17 +48,19 @@ window.__ModuleLoader__.load({
     }
     function clone(v) { return JSON.parse(JSON.stringify(v)) }
     function normPath(p) { return (p || '').replace(/\/+$/, '') }
+    // 绝对路径：posix 以 / 开头，Windows 为盘符或 \ 开头（如 C:\proj、D:/proj）
+    function isAbsPath(p) { return /^([a-zA-Z]:[\\/]|[\\/])/.test(p || '') }
     function joinPath(base, name) {
       if (!name) return base || ''
-      if (name.startsWith('/')) return name
+      if (isAbsPath(name)) return name
       const b = base || ''
       if (!b) return name
-      return b === '/' ? '/' + name : b.replace(/\/+$/, '') + '/' + name
+      return b === '/' ? '/' + name : b.replace(/[\\/]+$/, '') + '/' + name
     }
     function parentPath(p) {
       const base = normPath(p || '')
-      if (!base || base === '/') return '/'
-      const i = base.lastIndexOf('/')
+      if (!base || base === '/' || /^[a-zA-Z]:[\\/]?$/.test(base)) return base || '/'
+      const i = Math.max(base.lastIndexOf('/'), base.lastIndexOf('\\'))
       return i <= 0 ? '/' : base.slice(0, i)
     }
     function newEnvId(envs) {

@@ -4,6 +4,11 @@ import { getHistory, replaceHistory, HIST_LIMIT } from './history.js'
 import { activeRecord } from './deployment.js'
 import { listJdks, listWorktrees, readGitInfo, browseDirectory, which } from './local-tools.js'
 
+// sshpass 无 Windows 版本；警告文案按平台给出可操作的下一步（保存/导入两处共用）
+const SSHPASS_HINT = process.platform === 'win32'
+  ? '但本机没有 sshpass（Windows 无此工具），部署时无法使用密码认证；请改用密钥认证（SSH 自定义选项填 -i 私钥路径，并清空密码）'
+  : '但本机未安装 sshpass，部署时无法使用密码认证。请先执行: brew install hudochenkov/sshpass/sshpass'
+
 // JSON-RPC 方法表：与旧 server.ts 的 /api/* 逐一对齐（字段名不变）
 const methods = {
   config: () => {
@@ -27,7 +32,7 @@ const methods = {
     await saveEnvs()
     let warning = ''
     if (env.ssh.password && !(await which('sshpass'))) {
-      warning = '已保存，但本机未安装 sshpass，部署时无法使用密码认证。请先执行: brew install hudochenkov/sshpass/sshpass'
+      warning = '已保存，' + SSHPASS_HINT
     }
     return { envs: getEnvs(), warning }
   },
@@ -68,7 +73,7 @@ const methods = {
     const touched = new Set([...added, ...overwritten])
     let warning = ''
     if (getEnvs().some(e => touched.has(e.id) && e.ssh.password) && !(await which('sshpass'))) {
-      warning = '已导入，但本机未安装 sshpass，部署时无法使用密码认证。请先执行: brew install hudochenkov/sshpass/sshpass'
+      warning = '已导入，' + SSHPASS_HINT
     }
     return { envs: getEnvs(), added, overwritten, warning }
   },

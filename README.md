@@ -20,14 +20,18 @@
 | --- | --- |
 | Node.js | >= 22 |
 | DSH | >= 0.2.1-rc.3, < 0.3.0 |
-| 部署机工具 | `rsync`、`ssh`；配置 SSH 密码时另需 `sshpass` |
+| 部署机工具 | `rsync`（或 `rclone`）、`ssh`；rsync + SSH 密码时另需 `sshpass`（无 Windows 版） |
+
+> **同步工具回退**：本机有 `rsync` 优先用 rsync over ssh；没有 rsync 时自动回退 `rclone`（SFTP 后端）：前端模块用 `rclone sync`（自带镜像删除，等价 `--delete`），服务端模块用 `rclone copy`（不删除）。rclone 同步自身支持密码与密钥（密钥取 SSH 自定义选项里的 `-i`），不依赖 sshpass。
+>
+> **Windows 主机**：Gradle 构建（`gradlew.bat`）、JDK 自动发现（`JAVA_HOME` + 常见安装目录）、目录浏览均可原生工作。装一个 [rclone](https://rclone.org) 即可获得完整同步能力（含密码认证）；仅当模块配置了远程命令时才需要系统自带 OpenSSH 的 `ssh`——远程命令 + 密码依赖 sshpass（Windows 无此工具），请改用密钥认证（SSH 自定义选项填 `-i 私钥路径`，并清空密码）。
 
 ## 安装
 
 插件发布在 npm，通过 DSH 插件管理器直接安装：
 
 ```text
-plugin_manager → action: install_bundle → target: dsh-app-deploy@0.1.0
+plugin_manager → action: install_bundle → target: dsh-app-deploy@0.2.0
 ```
 
 安装后刷新 DSH Web，左侧导航出现「部署」入口。
@@ -52,6 +56,7 @@ plugin_manager → action: install_bundle → target: dsh-app-deploy@0.1.0
 ```
 清理构建目录 → ./gradlew <task> [-Pkey] [额外参数] [-PexpTime]
   → rsync [-r -t -z] 本地产物 → user@host:远程路径（前端加 --delete）
+    （无 rsync 时回退 rclone：前端 rclone sync / 服务端 rclone copy，走 SFTP）
   → ssh 远程命令（可空）
   → 健康检查（可空：HTTP 2xx + success=true + code=200）
 ```

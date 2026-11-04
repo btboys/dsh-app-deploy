@@ -85,6 +85,13 @@ test('validateEnv：合法环境零错误，非法字段逐条报出', async () 
   assert.ok(validateEnv({ ...normalized, name: '   ' }).some(e => e.includes('名称必填')))
   assert.ok(validateEnv({ ...normalized, projectPath: 'relative/path' }).some(e => e.includes('项目路径必须是绝对路径')))
   assert.ok(validateEnv({ ...normalized, projectPath: '/bad path' }).some(e => e.includes('项目路径含非法字符')))
+
+  // Windows 盘符路径视为绝对路径（\ 与 / 均可）
+  const winPath = { ...normalized, projectPath: 'C:\\work\\proj', jdkHome: 'C:\\Java\\jdk-17' }
+  assert.deepEqual(validateEnv(winPath).filter(e => e.includes('路径')), [])
+  const winPathSlash = { ...normalized, projectPath: 'D:/work/proj', jdkHome: '' }
+  assert.deepEqual(validateEnv(winPathSlash).filter(e => e.includes('项目路径')), [])
+  assert.ok(validateEnv({ ...normalized, projectPath: 'C:relpath' }).some(e => e.includes('项目路径必须是绝对路径')))
   assert.ok(validateEnv({ ...normalized, ssh: { ...normalized.ssh, port: 0 } }).some(e => e.includes('SSH port')))
   assert.ok(validateEnv({ ...normalized, ssh: { ...normalized.ssh, host: 'bad host' } }).some(e => e.includes('SSH host 非法')))
   assert.ok(validateEnv({ ...normalized, ssh: { ...normalized.ssh, options: '; rm -rf /' } }).some(e => e.includes('SSH 自定义选项')))
