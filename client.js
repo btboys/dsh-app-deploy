@@ -74,7 +74,7 @@ window.__ModuleLoader__.load({
       while (modules.some((m) => m.id === 'mod' + n)) n++
       return {
         id: 'mod' + n, name: '新模块', kind: 'front', enabled: true,
-        buildCmd: '', sshId: '', localPath: '', remotePath: '',
+        buildCmd: '', sshId: '', instances: [], localPath: '', remotePath: '',
         postCommand: '', healthCheckUrl: '', frontEnv: '',
       }
     }
@@ -83,6 +83,7 @@ window.__ModuleLoader__.load({
         id: m.id || '', name: m.name || '', kind: m.kind === 'server' ? 'server' : 'front',
         enabled: m.enabled !== false,
         buildCmd: m.buildCmd || '', sshId: m.sshId || '',
+        instances: Array.isArray(m.instances) ? m.instances.map((i) => ({ sshId: i.sshId || '', healthCheckUrl: i.healthCheckUrl || '' })) : [],
         localPath: m.localPath || '', remotePath: m.remotePath || '', postCommand: m.postCommand || '',
         healthCheckUrl: m.healthCheckUrl || '', frontEnv: m.frontEnv || '',
       }
@@ -326,6 +327,28 @@ window.__ModuleLoader__.load({
             }))),
         h('div', { className: 'dad-hint' },
           '健康检查：HTTP 2xx、success=true、code=200；单次最多 5 秒，间隔 3 秒，最多等待 120 秒，失败中止后续模块。'),
+        h('div', { className: 'dad-instbox' },
+          h('div', { className: 'dad-insthead' },
+            h('span', { className: 'dad-label' }, '多实例（滚动发布：按顺序逐实例更新，探活通过才更新下一个；留空 = 单实例）'),
+            h('button', {
+              type: 'button', className: 'dad-btn', onClick: () => onChange('instances', [...(mod.instances || []), { sshId: (sshs[0] || {}).id || '', healthCheckUrl: '' }]),
+            }, '+ 添加实例')),
+          (mod.instances || []).map((inst, ii) => h('div', { key: ii, className: 'dad-inline', style: { marginBottom: '6px' } },
+            h('select', {
+              className: 'dad-select', value: inst.sshId, 'aria-label': '实例 ' + (ii + 1) + ' SSH 目标',
+              onChange: (ev) => onChange('instances', (mod.instances || []).map((x, j) => (j === ii ? { ...x, sshId: ev.target.value } : x))),
+            },
+              (sshs || []).map((s) => h('option', { key: s.id, value: s.id }, s.name || s.id))),
+            h('input', {
+              className: 'dad-input', type: 'text', value: inst.healthCheckUrl, placeholder: '探活 URL（可空，默认用模块的）',
+              'aria-label': '实例 ' + (ii + 1) + ' 健康检查 URL',
+              onChange: (ev) => onChange('instances', (mod.instances || []).map((x, j) => (j === ii ? { ...x, healthCheckUrl: ev.target.value } : x))),
+            }),
+            h('button', {
+              type: 'button', className: 'dad-btndel', title: '删除实例', 'aria-label': '删除实例 ' + (ii + 1),
+              style: { position: 'static' },
+              onClick: () => onChange('instances', (mod.instances || []).filter((_, j) => j !== ii)),
+            }, '×')))),
         mod.kind === 'front'
           ? h('div', { className: 'dad-row' },
             h(Field, { label: feLabel, wide: true },
@@ -1067,6 +1090,7 @@ window.__ModuleLoader__.load({
             enabled: !!m.enabled,
             buildCmd: (m.buildCmd || '').trim(),
             sshId: (m.sshId || '').trim(),
+            instances: (m.instances || []).map((i) => ({ sshId: (i.sshId || '').trim(), healthCheckUrl: (i.healthCheckUrl || '').trim() })),
             localPath: (m.localPath || '').trim(),
             remotePath: (m.remotePath || '').trim(),
             postCommand: (m.postCommand || '').trim(),
@@ -1238,9 +1262,15 @@ window.__ModuleLoader__.load({
           const exp = m.kind === 'server' && env.expTime && ((m.buildCmd || '').trim().split(/\s+/)[0] || '').includes('gradle') ? ' -PexpTime=' + env.expTime : ''
           lines.push('')
           lines.push('[' + (m.name || m.id) + ']')
-          const target = targetOf(env, m)
           lines.push('  构建: ' + m.buildCmd + exp)
-          lines.push('  rsync: ' + m.localPath + ' → ' + (target.user || 'root') + '@' + (target.host || '?') + ':' + m.remotePath + (env.sshs && env.sshs.length > 1 ? '（目标: ' + (target.name || target.id) + '）' : ''))
+          const insts = (m.instances || []).length
+            ? m.instances.map((inst, ii) => ({ target: targetOf(env, { sshId: inst.sshId }), healthCheckUrl: inst.healthCheckUrl || m.healthCheckUrl, label: '实例' + (ii + 1) }))
+            : [{ target: targetOf(env, m), healthCheckUrl: m.healthCheckUrl, label: '' }]
+          for (const inst of insts) {
+            const t = inst.target
+            lines.push('  ' + (inst.label ? inst.label + ' ' : '') + 'rsync: ' + m.localPath + ' → ' + (t.user || 'root') + '@' + (t.host || '?') + ':' + m.remotePath + (inst.label ? '' : (env.sshs && env.sshs.length > 1 ? '（目标: ' + (t.name || t.id) + '）' : '')))
+            if (inst.healthCheckUrl) lines.push('    探活: ' + inst.healthCheckUrl)
+          }
           if (m.postCommand) lines.push('  ssh: ' + m.postCommand)
         }
         return lines.join('\n')

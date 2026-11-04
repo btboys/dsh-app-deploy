@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { promises as fsp, existsSync } from 'node:fs'
 import path from 'node:path'
-import { getEnvs, targetFor } from './config.js'
+import { getEnvs, instanceList } from './config.js'
 import { getHistory, saveHistory, LOGTAIL_CHARS } from './history.js'
 import { listWorktrees, which, rcloneObscure } from './local-tools.js'
 import { checkHealth } from './health-check.js'
@@ -238,12 +238,10 @@ export function buildRcloneArgs(target, m, local, rclone) {
   return args
 }
 
-// 返回退出码与失败阶段（清理/构建/同步/远程命令），用于执行记录
+// 返回退出码与失败阶段（清理/构建/同步/远程命令/健康检查），用于执行记录
 // rclone 非空时用 rclone（SFTP）替代 rsync 同步；rsyncEnv 同时承载 sshpass 的 SSHPASS
-// target 为模块选中的 SSH 目标（env.sshs 之一）
-export async function deployModule(env, m, target, sshpass, rclone = null) {
-  const sshBase = `ssh -p ${target.port}${target.keyFile ? ' -i ' + target.keyFile : ''}${target.options ? ' ' + target.options : ''}`
-  const dest = `${target.user}@${target.host}`
+// 发布目标不再作为参数：模块可能多实例（instanceList），逐实例在内部解析
+export async function deployModule(env, m, sshpass, rclone = null) {
   // 0. 清理构建目录（恢复原 update-*.sh 行为）
   const c0 = await cleanBuildDir(env, m)
   if (c0 !== 0) return { code: c0, step: '清理' }
@@ -284,38 +282,52 @@ export async function deployModule(env, m, target, sshpass, rclone = null) {
   const c1 = await runStep(`[${m.name}] 构建: ${buildArgs.join(' ')} ${noteSuffix}`, buildArgs, { cwd: env.projectPath, env: envForGradle, shell: IS_WIN })
   if (c1 !== 0) { broadcast(`[${m.name}] 构建失败，退出码 ${c1}，中止部署\n`); return { code: c1, step: '构建' } }
 
-  // 2. 同步：优先 rsync；本机没有时回退 rclone（--delete 仅用于前端模块，与原脚本行为一致）
+  // 2/3. 多实例滚动发布：按实例列表顺序，逐个 同步 → 远程命令 → 探活；探活通过才更新下一个实例。
+  // 无实例配置 = 单实例（模块默认目标与健康检查 URL）。
   const isFront = m.kind === 'front'
   // 保留 rsync 的目录尾斜杠语义：dist/ 传内容本身，dist 传 dist 目录
   const isDirLike = /[\\/]$/.test(m.localPath)
   const joined = path.isAbsolute(m.localPath) ? m.localPath : path.join(env.projectPath, m.localPath)
   const local = joined.replace(/[\\/]+$/, '') + (isDirLike ? '/' : '')
-  const rsyncEnv = sshpass ? { ...process.env, SSHPASS: target.password } : process.env
-  let c2
-  if (rclone) {
-    const args = buildRcloneArgs(target, m, local, rclone)
-    c2 = await runStep(`[${m.name}] rclone ${isFront ? 'sync' : 'copy'} ${local} → :sftp:${m.remotePath}${isFront ? '（镜像 --delete）' : ''}`, [rclone.bin, ...args], {})
-  } else {
-    const rsyncArgs = ['rsync', '-r', '-t', '-z', '-e', sshpass ? `sshpass -e ${sshBase}` : sshBase]
-    if (isFront) rsyncArgs.push('--delete', '--exclude=.user.ini') // 排除宝塔 .user.ini（chattr +i 锁定，--delete 无法删除且会导致退出码非 0）
-    rsyncArgs.push(local, `${dest}:${m.remotePath}`)
-    c2 = await runStep(`[${m.name}] rsync ${local} → ${dest}:${m.remotePath}${isFront ? '（--delete）' : ''}`, rsyncArgs, { env: rsyncEnv })
-  }
-  if (c2 !== 0) { broadcast(`[${m.name}] 同步失败，退出码 ${c2}，中止部署\n`); return { code: c2, step: '同步' } }
+  const instances = instanceList(env, m)
+  if (instances.length > 1) broadcast(`[${m.name}] 多实例滚动发布：共 ${instances.length} 个实例，探活通过才更新下一个\n`)
+  for (let ii = 0; ii < instances.length; ii++) {
+    const inst = instances[ii]
+    const t = inst.target
+    const prefix = instances.length > 1 ? `[${m.name} ${inst.label}]` : `[${m.name}]`
+    const sshBase = `ssh -p ${t.port}${t.keyFile ? ' -i ' + t.keyFile : ''}${t.options ? ' ' + t.options : ''}`
+    const dest = `${t.user}@${t.host}`
+    // 仅当该实例目标配置了密码才挂 sshpass（避免空 SSHPASS 破坏密钥/agent 认证）
+    const usePass = sshpass && t.password
+    const rsyncEnv = usePass ? { ...process.env, SSHPASS: t.password } : process.env
+    // 2. 同步：优先 rsync；本机没有时回退 rclone（--delete 仅用于前端模块，与原脚本行为一致）
+    let c2
+    if (rclone) {
+      const args = buildRcloneArgs(t, m, local, rclone)
+      c2 = await runStep(`${prefix} rclone ${isFront ? 'sync' : 'copy'} ${local} → :sftp:${m.remotePath}${isFront ? '（镜像 --delete）' : ''}`, [rclone.bin, ...args], {})
+    } else {
+      const rsyncArgs = ['rsync', '-r', '-t', '-z', '-e', usePass ? `sshpass -e ${sshBase}` : sshBase]
+      if (isFront) rsyncArgs.push('--delete', '--exclude=.user.ini') // 排除宝塔 .user.ini（chattr +i 锁定，--delete 无法删除且会导致退出码非 0）
+      rsyncArgs.push(local, `${dest}:${m.remotePath}`)
+      c2 = await runStep(`${prefix} rsync ${local} → ${dest}:${m.remotePath}${isFront ? '（--delete）' : ''}`, rsyncArgs, { env: rsyncEnv })
+    }
+    if (c2 !== 0) { broadcast(`${prefix} 同步失败，退出码 ${c2}，中止部署\n`); return { code: c2, step: instances.length > 1 ? `同步（${inst.label}）` : '同步' } }
 
-  // 3. ssh 远程命令
-  if (m.postCommand.trim()) {
-    const sshArgs = []
-    if (sshpass) sshArgs.push('sshpass', '-e')
-    sshArgs.push('ssh', '-p', String(target.port))
-    if (target.keyFile) sshArgs.push('-i', target.keyFile)
-    if (target.options) sshArgs.push(...target.options.trim().split(/\s+/).filter(Boolean))
-    sshArgs.push(dest, m.postCommand.trim())
-    const c3 = await runStep(`[${m.name}] 远程执行: ${m.postCommand.trim()}`, sshArgs, { env: rsyncEnv })
-    if (c3 !== 0) { broadcast(`[${m.name}] 远程命令失败，退出码 ${c3}，中止部署\n`); return { code: c3, step: '远程命令' } }
-  }
-  if (!await checkHealth(m.healthCheckUrl || '', message => broadcast(`[${m.name}] ${message}`))) {
-    return { code: 1, step: '健康检查' }
+    // 3. ssh 远程命令
+    if (m.postCommand.trim()) {
+      const sshArgs = []
+      if (usePass) sshArgs.push('sshpass', '-e')
+      sshArgs.push('ssh', '-p', String(t.port))
+      if (t.keyFile) sshArgs.push('-i', t.keyFile)
+      if (t.options) sshArgs.push(...t.options.trim().split(/\s+/).filter(Boolean))
+      sshArgs.push(dest, m.postCommand.trim())
+      const c3 = await runStep(`${prefix} 远程执行: ${m.postCommand.trim()}`, sshArgs, { env: rsyncEnv })
+      if (c3 !== 0) { broadcast(`${prefix} 远程命令失败，退出码 ${c3}，中止部署\n`); return { code: c3, step: instances.length > 1 ? `远程命令（${inst.label}）` : '远程命令' } }
+    }
+    // 探活：通过才继续下一个实例（滚动发布闸门）
+    if (!await checkHealth(inst.healthCheckUrl || '', message => broadcast(`${prefix} ${message}`))) {
+      return { code: 1, step: instances.length > 1 ? `健康检查（${inst.label}）` : '健康检查' }
+    }
   }
   return { code: 0, step: null }
 }
@@ -329,7 +341,7 @@ async function runDeployment(env, mods) {
     const rcloneBin = hasRsync ? null : await which('rclone')
     const needSsh = mods.some(m => m.enabled && m.postCommand.trim())
     // 每个启用的模块按其 sshId 解析发布目标（env.sshs 之一）
-    const usedTargets = [...new Set(mods.filter(m => m.enabled).map(m => targetFor(env, m)))]
+    const usedTargets = [...new Set(mods.filter(m => m.enabled).flatMap(m => instanceList(env, m).map(i => i.target)))]
     const missing = []
     if (!hasRsync && !rcloneBin) missing.push('rsync（或 rclone）')
     if ((hasRsync || needSsh) && !(await which('ssh'))) missing.push('ssh')
@@ -354,17 +366,21 @@ async function runDeployment(env, mods) {
       code = 0
       for (const m of mods) {
         if (!m.enabled) { broadcast(`[跳过] ${m.name} 已禁用\n`); continue }
-        const target = targetFor(env, m)
-        if (rclone && target.password && !passCache.has(target.password)) {
-          const pass = await rcloneObscure(rcloneBin, target.password)
-          if (!pass) {
-            broadcast(`错误: rclone obscure 密码处理失败（目标 ${target.name}），无法使用密码认证\n`)
-            code = 127
-            break
+        // 预检该模块所有实例目标的 rclone 密码（逐实例 obscure，按密码缓存）
+        for (const inst of instanceList(env, m)) {
+          const target = inst.target
+          if (rclone && target.password && !passCache.has(target.password)) {
+            const pass = await rcloneObscure(rcloneBin, target.password)
+            if (!pass) {
+              broadcast(`错误: rclone obscure 密码处理失败（目标 ${target.name}），无法使用密码认证\n`)
+              code = 127
+              break
+            }
+            passCache.set(target.password, pass)
           }
-          passCache.set(target.password, pass)
         }
-        const res = await deployModule(env, m, target, target.password ? sshpass : null, rclone)
+        if (code !== 0) break
+        const res = await deployModule(env, m, sshpass, rclone)
         if (res.code !== 0) {
           if (running?.record) { running.record.failedModule = m.name; running.record.failedStep = res.step }
           code = res.code
@@ -405,7 +421,7 @@ export async function handleDeploy(req, res, url) {
   const mods = orderIds.map(id => ordered.find(m => m.id === id)).filter(m => !!m)
   if (!mods.length) return bad('所选模块在环境中均不可用或已禁用')
   // 所选模块涉及的 SSH 目标都必须有 host/user
-  const runTargets = [...new Set(mods.map(m => targetFor(env, m)))]
+  const runTargets = [...new Set(mods.flatMap(m => instanceList(env, m).map(i => i.target)))]
   if (runTargets.some(t => !t.host || !t.user)) return bad('SSH 目标配置不完整')
 
   const sseHeaders = { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' }
@@ -479,7 +495,7 @@ export async function runDeploy(envId, moduleIds = []) {
     const missing = want.filter(id => !enabled.some(m => m.id === id))
     throw new Error(`模块不可用或已禁用: ${missing.join('、')}`)
   }
-  const runTargets = [...new Set(mods.map(m => targetFor(env, m)))]
+  const runTargets = [...new Set(mods.flatMap(m => instanceList(env, m).map(i => i.target)))]
   if (runTargets.some(t => !t.host || !t.user)) throw new Error('SSH 目标配置不完整')
 
   const rec = {

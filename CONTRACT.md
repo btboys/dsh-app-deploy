@@ -92,6 +92,7 @@ interface ModuleCfg {
   id: string; name: string; kind: ModKind; enabled: boolean
   buildCmd: string // 通用构建命令，如 ./gradlew … / mvn -DskipTests package / npm run build
   sshId: string // 发布目标（env.sshs 之一），空 = 第一个目标
+  instances: Array<{ sshId: string, healthCheckUrl: string }> // 多实例滚动发布；空 = 单实例。实例探活 URL 可空（回落模块级）
   localPath: string; remotePath: string; postCommand: string
   healthCheckUrl?: string; frontEnv: string
 }
@@ -140,7 +141,7 @@ interface DeployRecord {
   分组默认值、校验（`BAD_PATH`/`BAD_CMD`/frontEnv/buildEnv/healthCheckUrl 等）、`saveEnv` 时若任一目标配了密码但本机无 sshpass 给 `warning`。
 - `server/deployment.js`：构建前清理 → 执行模块 `buildCmd`（首 token 含 gradle 的 server 模块自动追加 `-PexpTime`，Windows 下 `./gradlew` 回退 `gradlew.bat`；
   构建 env 依次注入 JAVA_HOME / Node PATH / 包管理器 PATH / NODE_OPTIONS / env.buildEnv / 模块 frontEnv）→ `rsync`（front 加 `--delete --exclude=.user.ini`）→ `ssh postCommand` → 健康检查；
-  每个模块按其 `sshId` 解析目标（`targetFor`，空回落第一个）；密钥 keyFile 与密码可同时使用；
+  每个模块按其 `sshId` 解析目标（`targetFor`，空回落第一个）；配置了 `instances` 时构建一次、按实例顺序滚动发布（逐实例 同步→远程命令→探活，探活通过才更新下一个，失败中止剩余实例，失败阶段标注实例号）；密钥 keyFile 与密码可同时使用；
   任一步非零中止并记录 `failedModule/failedStep`；结束若项目存在 gradlew 则停 `./gradlew --stop`。
   子进程用 `node:child_process.spawn`，`stdout/stderr` 流式 `broadcast`。
   `sshpass` 检测用 `execFile('which', ['sshpass'])` 或等价方案；有密码时 `rsync/ssh` 走 `sshpass -e`，密码只放 `SSHPASS` 环境变量。
@@ -191,7 +192,7 @@ window.__ModuleLoader__.load({
    每卡「复制」「删除」。顶部「+ 添加环境」。
 2. **环境编辑**：基本项（名称/ID(新增可改)/备注/分组/项目路径/JDK/Node 路径/Node options/包管理器路径/构建环境变量/expTime）、
    SSH 目标列表（名称/ID/host/port/user/密码/私钥路径(可浏览选择)/自定义选项，每个目标带「测试连接」按钮，可增删）、
-   模块卡片列表（显示名/类型/ID/启用/构建命令(左侧构建工具下拉)/SSH 目标/本地路径/远程路径/postCommand/健康检查 URL/front 模块的 frontEnv 多行文本）；
+   模块卡片列表（显示名/类型/ID/启用/构建命令(左侧构建工具下拉)/SSH 目标/本地路径/远程路径/postCommand/健康检查 URL/多实例滚动发布列表(实例 SSH 目标+探活 URL，可增删)/front 模块的 frontEnv 多行文本）；
    增删模块；「保存环境」「删除此环境」；保存后用返回的 `envs` 刷新。
 3. **路径选择**：项目路径「浏览…」弹层（`browse` RPC：目录列表、上级、选择当前、显示隐藏目录开关、worktree 快捷跳转）；私钥路径用 `file:true` 文件选择模式，从 `~/.ssh` 起步。
 4. **JDK/Node/包管理器 下拉**：聚焦对应输入框时展示 `jdks`/`nodes`/`packageManagers` 列表，点选填入；构建命令左侧另有构建工具（Gradle/Maven/npm/pnpm/yarn）下拉，选中填充命令模板。

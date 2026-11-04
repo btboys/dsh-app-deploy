@@ -31,7 +31,7 @@
 插件发布在 npm，通过 DSH 插件管理器直接安装：
 
 ```text
-plugin_manager → action: install_bundle → target: dsh-app-deploy@0.3.1
+plugin_manager → action: install_bundle → target: dsh-app-deploy@0.4.0
 ```
 
 安装后刷新 DSH Web，左侧导航出现「部署」入口。

@@ -16,6 +16,7 @@ export function envSummaryForModel(e) {
     modules: (e.modules || []).map(m => ({
       id: m.id, name: m.name, kind: m.kind, enabled: m.enabled, buildCmd: m.buildCmd, sshId: m.sshId || '',
       localPath: m.localPath, remotePath: m.remotePath, postCommand: m.postCommand, healthCheckUrl: m.healthCheckUrl || '',
+      instances: (m.instances || []).map((i) => ({ sshId: i.sshId, healthCheckUrl: i.healthCheckUrl })),
     })),
   }
 }
@@ -34,7 +35,7 @@ export function registerTools(ctx, defineTool, ensure) {
   const ready = () => (ensure ? ensure() : Promise.resolve())
   ctx.tools.register(defineTool({
     name: 'deploy_list_envs',
-    description: 'List deploy environments configured in the dsh-app-deploy plugin: SSH targets (passwords stripped), build modules with their build commands, artifact paths and publish targets. Use before deploy_run to pick env/module IDs.',
+    description: 'List deploy environments configured in the dsh-app-deploy plugin: SSH targets (passwords stripped), build modules with their build commands, artifact paths, publish targets and rolling-update instances. Use before deploy_run to pick env/module IDs.',
     parameters: {},
     output: {
       schema: {

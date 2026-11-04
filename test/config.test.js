@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { promises as fsp } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { initConfig, getEnvs, normalizeEnv, templateEnv, validateEnv } from '../server/config.js'
+import { initConfig, getEnvs, normalizeEnv, templateEnv, validateEnv, instanceList } from '../server/config.js'
 
 async function tempDir() {
   return fsp.mkdtemp(path.join(tmpdir(), 'dad-config-'))
@@ -143,4 +143,33 @@ test('validateEnv：合法环境零错误，非法字段逐条报出', async () 
   })
   assert.deepEqual(validateEnv(multi), [])
   assert.ok(validateEnv({ ...multi, modules: [{ ...multi.modules[0], sshId: 'nope' }] }).some(e => e.includes('SSH 目标「nope」不存在')))
+
+  // 多实例：合法零错误；实例目标不存在 / 探活 URL 非法报错；instanceList 展开与回落
+  const instEnv = normalizeEnv({
+    id: 'fxy', name: 'x', projectPath: '/p',
+    sshs: [
+      { id: 'n1', name: '节点1', host: 'a.com', port: 22, user: 'root' },
+      { id: 'n2', name: '节点2', host: 'b.com', port: 22, user: 'root' },
+    ],
+    modules: [{
+      id: 'bsServer', kind: 'server', buildCmd: './gradlew t', localPath: 'j.jar', remotePath: '/r',
+      instances: [
+        { sshId: 'n1', healthCheckUrl: 'https://a.com/api/' },
+        { sshId: 'n2' }, // URL 回落到模块级
+      ],
+      healthCheckUrl: 'https://shared.com/api/',
+    }],
+  })
+  assert.deepEqual(validateEnv(instEnv), [])
+  assert.ok(validateEnv({ ...instEnv, modules: [{ ...instEnv.modules[0], instances: [{ sshId: 'nope' }] }] }).some(e => e.includes('实例1 的 SSH 目标')))
+  assert.ok(validateEnv({ ...instEnv, modules: [{ ...instEnv.modules[0], instances: [{ sshId: 'n1', healthCheckUrl: 'ftp://x' }] }] }).some(e => e.includes('实例1 的健康检查 URL')))
+  const list = instanceList(instEnv, instEnv.modules[0])
+  assert.equal(list.length, 2)
+  assert.equal(list[0].target.host, 'a.com')
+  assert.equal(list[1].target.host, 'b.com')
+  assert.equal(list[1].healthCheckUrl, 'https://shared.com/api/')
+  // 无实例 = 单实例（模块默认目标）
+  const single = instanceList(instEnv, { ...instEnv.modules[0], instances: [], sshId: 'n2' })
+  assert.equal(single.length, 1)
+  assert.equal(single[0].target.host, 'b.com')
 })

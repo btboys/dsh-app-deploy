@@ -64,6 +64,27 @@ export function targetFor(env, m) {
   return list.find((s) => s.id === m?.sshId) || list[0]
 }
 
+// 模块的多实例发布列表：每个实例指定 SSH 目标与探活 URL（URL 可空 = 该实例不探活直接继续）；
+// 无实例配置 = 模块自身单实例（用模块默认目标与健康检查 URL）
+export function instanceList(env, m) {
+  if (!Array.isArray(m?.instances) || !m.instances.length) {
+    return [{ target: targetFor(env, m), healthCheckUrl: (m?.healthCheckUrl || '').trim(), label: '' }]
+  }
+  return m.instances.map((inst, i) => ({
+    target: targetFor(env, { ...m, sshId: inst.sshId }),
+    healthCheckUrl: (inst.healthCheckUrl || m.healthCheckUrl || '').trim(),
+    label: `实例${i + 1}`,
+  }))
+}
+
+// 实例数组归一化：只保留带 sshId 的项
+function normInstances(raw) {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((i) => ({ sshId: String(i?.sshId || ''), healthCheckUrl: String(i?.healthCheckUrl || '').trim() }))
+    .filter((i) => i.sshId)
+}
+
 // 把 modules 归一化为数组；record 旧格式自动转数组（id 保持 bsFront 等，name 映射），frontEnv.bs/admin 迁移进对应 front 模块
 function toModArray(mods, fe) {
   const out = []
@@ -78,6 +99,7 @@ function toModArray(mods, fe) {
         enabled: raw?.enabled !== false,
         buildCmd: String(raw?.buildCmd || cmdFromGradle(raw?.gradleTask, raw?.key, raw?.extraArgs)),
         sshId: String(raw?.sshId || ''),
+        instances: normInstances(raw?.instances),
         localPath: String(raw?.localPath || ''),
         remotePath: String(raw?.remotePath || ''),
         postCommand: String(raw?.postCommand || ''),
@@ -95,6 +117,7 @@ function toModArray(mods, fe) {
         enabled: m.enabled !== false,
         buildCmd: String(m.buildCmd || cmdFromGradle(m.gradleTask, m.key, m.extraArgs)),
         sshId: String(m.sshId || ''),
+        instances: normInstances(m.instances),
         localPath: String(m.localPath || ''), remotePath: String(m.remotePath || ''), postCommand: String(m.postCommand || ''),
         frontEnv: feText,
       })
@@ -257,6 +280,16 @@ export function validateEnv(e) {
     }
     if (!m.enabled) continue
     if (m.sshId && !sshList.some((s) => s.id === m.sshId)) errs.push(`${m.name || m.id}: SSH 目标「${m.sshId}」不存在`)
+    for (let ii = 0; ii < (m.instances || []).length; ii++) {
+      const inst = m.instances[ii]
+      if (!sshList.some((s) => s.id === inst.sshId)) errs.push(`${m.name || m.id}: 实例${ii + 1} 的 SSH 目标「${inst.sshId}」不存在`)
+      if (inst.healthCheckUrl) {
+        try {
+          const url = new URL(inst.healthCheckUrl)
+          if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('invalid URL')
+        } catch { errs.push(`${m.name || m.id}: 实例${ii + 1} 的健康检查 URL 必须是 HTTP/HTTPS 地址，且不能包含用户名或密码`) }
+      }
+    }
     if (!m.buildCmd.trim()) errs.push(`${m.name || m.id}: 构建命令必填（如 ./gradlew …、mvn …、npm run build）`)
     else if (BAD_CMD.test(m.buildCmd)) errs.push(`${m.name || m.id}: 构建命令含非法字符（禁止引号/; & | \` $ 等）`)
     if (!m.localPath) errs.push(`${m.name || m.id}: 本地产物路径必填`)
