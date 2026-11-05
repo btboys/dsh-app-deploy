@@ -3,25 +3,25 @@ import { realpathSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { initConfig } from './server/config.js'
 import { initHistory } from './server/history.js'
 import { handleRpc } from './server/rpc.js'
 import { handleDeploy, killActiveProcess } from './server/deployment.js'
 import { registerTools } from './server/tools.js'
 
-// ponytail: linked workspace cannot resolve dsh's own packages; resolve from the dsh entry instead
-function hostRequire() {
-  const local = createRequire(import.meta.url)
+// ponytail: linked workspace cannot resolve dsh's own packages; resolve from the dsh entry instead.
+// Must import() (not require()): host loads plugins via Promise.all, require(esm) races and throws ERR_REQUIRE_ESM_RACE_CONDITION.
+function hostResolve(spec) {
   try {
-    local.resolve('@deepseek-ai/dsh-tools')
-    return local
+    return createRequire(import.meta.url).resolve(spec)
   } catch {}
   if (!process.argv[1]) throw new Error('找不到 dsh 安装目录')
-  return createRequire(realpathSync(process.argv[1]))
+  return createRequire(realpathSync(process.argv[1])).resolve(spec)
 }
-const host = hostRequire()
-const schema = host('@deepseek-ai/schemastery')
-const z = schema.z ?? schema
+const hostImport = (spec) => import(pathToFileURL(hostResolve(spec)))
+const schema = await hostImport('@deepseek-ai/schemastery')
+const z = schema.z ?? schema.default ?? schema
 
 export const inject = ['webServer', 'tools']
 export const Config = z.object({
@@ -58,7 +58,7 @@ function resolveDataDir(config) {
   return join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'dsh-app-deploy')
 }
 
-export function apply(ctx, config) {
+export async function apply(ctx, config) {
   const dataDir = resolveDataDir(config)
   // 延迟初始化：apply 内不 await，首个请求/工具调用时才读数据目录/初始化配置
   let ready
@@ -69,7 +69,8 @@ export function apply(ctx, config) {
   })())
   // AI 工具：列出环境 / 执行部署 / 执行记录 / SSH 测试（defineTool 从 dsh 宿主解析，失败不影响面板）
   try {
-    registerTools(ctx, host('@deepseek-ai/dsh-tools').defineTool, ensure)
+    const { defineTool } = await hostImport('@deepseek-ai/dsh-tools')
+    registerTools(ctx, defineTool, ensure)
   } catch (err) {
     console.warn('[dsh-app-deploy] 注册 AI 工具失败:', err?.message || err)
   }
