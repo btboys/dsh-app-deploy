@@ -74,7 +74,7 @@ window.__ModuleLoader__.load({
       while (modules.some((m) => m.id === 'mod' + n)) n++
       return {
         id: 'mod' + n, name: '新模块', kind: 'front', enabled: true,
-        buildCmd: '', sshId: '', instances: [], localPath: '', remotePath: '',
+        buildCmd: '', buildDir: '', sshId: '', instances: [], localPath: '', remotePath: '',
         postCommand: '', healthCheckUrl: '', frontEnv: '',
       }
     }
@@ -82,7 +82,7 @@ window.__ModuleLoader__.load({
       return {
         id: m.id || '', name: m.name || '', kind: m.kind === 'server' ? 'server' : 'front',
         enabled: m.enabled !== false,
-        buildCmd: m.buildCmd || '', sshId: m.sshId || '',
+        buildCmd: m.buildCmd || '', buildDir: m.buildDir || '', sshId: m.sshId || '',
         instances: Array.isArray(m.instances) ? m.instances.map((i) => ({ sshId: i.sshId || '', healthCheckUrl: i.healthCheckUrl || '' })) : [],
         localPath: m.localPath || '', remotePath: m.remotePath || '', postCommand: m.postCommand || '',
         healthCheckUrl: m.healthCheckUrl || '', frontEnv: m.frontEnv || '',
@@ -296,7 +296,13 @@ window.__ModuleLoader__.load({
               h('input', {
                 className: 'dad-input', type: 'text', value: mod.buildCmd, 'aria-label': '构建命令',
                 onChange: (ev) => onChange('buildCmd', ev.target.value),
-              })))),
+              }))),
+          h(Field, { label: '执行目录（相对项目路径或绝对路径，留空 = 项目根目录）' },
+            h('input', {
+              className: 'dad-input', type: 'text', value: mod.buildDir || '', 'aria-label': '构建执行目录',
+              placeholder: '如 catering/tenant-web',
+              onChange: (ev) => onChange('buildDir', ev.target.value),
+            }))),
         h('div', { className: 'dad-row' },
           h(Field, { label: '本地产物路径' },
             h('input', {
@@ -1089,6 +1095,7 @@ window.__ModuleLoader__.load({
             kind: m.kind === 'server' ? 'server' : 'front',
             enabled: !!m.enabled,
             buildCmd: (m.buildCmd || '').trim(),
+            buildDir: (m.buildDir || '').trim(),
             sshId: (m.sshId || '').trim(),
             instances: (m.instances || []).map((i) => ({ sshId: (i.sshId || '').trim(), healthCheckUrl: (i.healthCheckUrl || '').trim() })),
             localPath: (m.localPath || '').trim(),
@@ -1262,7 +1269,7 @@ window.__ModuleLoader__.load({
           const exp = m.kind === 'server' && env.expTime && ((m.buildCmd || '').trim().split(/\s+/)[0] || '').includes('gradle') ? ' -PexpTime=' + env.expTime : ''
           lines.push('')
           lines.push('[' + (m.name || m.id) + ']')
-          lines.push('  构建: ' + m.buildCmd + exp)
+          lines.push('  构建: ' + m.buildCmd + exp + (m.buildDir ? '（目录: ' + m.buildDir + '）' : ''))
           const insts = (m.instances || []).length
             ? m.instances.map((inst, ii) => ({ target: targetOf(env, { sshId: inst.sshId }), healthCheckUrl: inst.healthCheckUrl || m.healthCheckUrl, label: '实例' + (ii + 1) }))
             : [{ target: targetOf(env, m), healthCheckUrl: m.healthCheckUrl, label: '' }]

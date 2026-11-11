@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { promises as fsp } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { initConfig, getEnvs, normalizeEnv, templateEnv, validateEnv, instanceList } from '../server/config.js'
+import { initConfig, getEnvs, normalizeEnv, templateEnv, validateEnv, instanceList, reloadEnvs } from '../server/config.js'
 
 async function tempDir() {
   return fsp.mkdtemp(path.join(tmpdir(), 'dad-config-'))
@@ -16,6 +16,40 @@ test('新装插件不播种：envs.json 缺失时初始化为空数组', async (
   assert.deepEqual(getEnvs(), [])
   const written = JSON.parse(await fsp.readFile(path.join(dir, 'envs.json'), 'utf8'))
   assert.deepEqual(written, [])
+})
+
+test('reloadEnvs：外部修改 envs.json 后重读磁盘生效', async () => {
+  const dir = await tempDir()
+  await initConfig({ dataDir: dir, defaultProjectPath: '/tmp/project' })
+  assert.deepEqual(getEnvs(), [])
+
+  // 模拟外部直接写入配置文件
+  await fsp.writeFile(path.join(dir, 'envs.json'), JSON.stringify([
+    { id: 'ext', name: '外部环境', projectPath: '/ext', sshs: [{ host: 'h', user: 'u' }], modules: [] },
+  ]))
+  assert.deepEqual(getEnvs(), [], '未 reload 前仍是内存副本')
+  await reloadEnvs()
+  assert.equal(getEnvs().length, 1)
+  assert.equal(getEnvs()[0].id, 'ext')
+})
+
+test('reloadEnvs：envs.json 损坏时保留内存副本且不覆写磁盘', async () => {
+  const dir = await tempDir()
+  await initConfig({ dataDir: dir, defaultProjectPath: '/tmp/project' })
+  const file = path.join(dir, 'envs.json')
+  await fsp.writeFile(file, JSON.stringify([
+    { id: 'ok', name: '好环境', projectPath: '/ok', sshs: [{ host: 'h', user: 'u' }], modules: [] },
+  ]))
+  await reloadEnvs()
+  assert.equal(getEnvs().length, 1)
+
+  // 模拟外部非原子写入留下的半截 JSON：reload 不得清空配置，也不得覆写磁盘
+  const half = '[{"id":"ok"'
+  await fsp.writeFile(file, half)
+  await reloadEnvs()
+  assert.equal(getEnvs().length, 1, '解析失败应保留内存副本')
+  assert.equal(getEnvs()[0].id, 'ok')
+  assert.equal(await fsp.readFile(file, 'utf8'), half, '损坏文件不得被覆写')
 })
 
 test('旧 schema（script/record）迁移：保留 id/name/note，补齐空字段并重写文件', async () => {
@@ -128,6 +162,17 @@ test('validateEnv：合法环境零错误，非法字段逐条报出', async () 
   assert.deepEqual(validateEnv(mvn), [])
   const npm = { ...normalized, modules: [{ ...normalized.modules[0], kind: 'front', buildCmd: 'npm run build' }] }
   assert.deepEqual(validateEnv(npm), [])
+
+  // 构建执行目录：相对/绝对合法，.. 逃逸与非法字符报错
+  const withDir = { ...normalized, modules: [{ ...normalized.modules[0], buildDir: 'catering/tenant-web' }] }
+  assert.deepEqual(validateEnv(withDir), [])
+  assert.equal(normalizeEnv(withDir).modules[0].buildDir, 'catering/tenant-web')
+  const absDir = { ...normalized, modules: [{ ...normalized.modules[0], buildDir: '/opt/proj/web' }] }
+  assert.deepEqual(validateEnv(absDir), [])
+  const escDir = { ...normalized, modules: [{ ...normalized.modules[0], buildDir: '../outside' }] }
+  assert.ok(validateEnv(escDir).some(e => e.includes('不能包含 ..')))
+  const badDir = { ...normalized, modules: [{ ...normalized.modules[0], buildDir: 'dir; rm -rf /' }] }
+  assert.ok(validateEnv(badDir).some(e => e.includes('构建执行目录含非法字符')))
 
   const noRemote = { ...normalized, modules: [{ ...normalized.modules[0], remotePath: '' }] }
   assert.ok(validateEnv(noRemote).some(e => e.includes('远程目标路径必填')))

@@ -4,11 +4,11 @@ import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { initConfig } from './server/config.js'
+import { initConfig, reloadEnvs } from './server/config.js'
 import { initHistory } from './server/history.js'
 import { handleRpc } from './server/rpc.js'
 import { handleDeploy, killActiveProcess } from './server/deployment.js'
-import { registerTools } from './server/tools.js'
+import { registerTools, CONFIG_GUIDE } from './server/tools.js'
 
 // ponytail: linked workspace cannot resolve dsh's own packages; resolve from the dsh entry instead.
 // Must import() (not require()): host loads plugins via Promise.all, require(esm) races and throws ERR_REQUIRE_ESM_RACE_CONDITION.
@@ -67,13 +67,23 @@ export async function apply(ctx, config) {
     await initConfig({ dataDir, defaultProjectPath: config?.defaultProjectPath || '' })
     await initHistory(dataDir)
   })())
-  // AI 工具：列出环境 / 执行部署 / 执行记录 / SSH 测试（defineTool 从 dsh 宿主解析，失败不影响面板）
+  // AI 工具：列出环境 / 保存环境 / 执行部署 / 执行记录 / SSH 测试（defineTool 从 dsh 宿主解析，失败不影响面板）
   try {
     const { defineTool } = await hostImport('@deepseek-ai/dsh-tools')
     registerTools(ctx, defineTool, ensure)
   } catch (err) {
     console.warn('[dsh-app-deploy] 注册 AI 工具失败:', err?.message || err)
   }
+  // 注入配置说明到系统提示词：AI 用 deploy_save_env 创建/修改配置时参考（宿主无 systemPrompt 服务时跳过）
+  try {
+    ctx.inject(['systemPrompt'], (c) => {
+      const sp = c.systemPrompt
+      if (!sp || typeof sp.section !== 'function') return
+      // 紧跟宿主 TOOLS_SDK section 之后；宿主无该常量时回退 5100
+      const sdk = typeof sp.getSectionOrder === 'function' ? sp.getSectionOrder('TOOLS_SDK') : NaN
+      sp.section({ name: 'dsh-app-deploy:config-guide', order: Number.isFinite(sdk) ? sdk + 100 : 5100, text: CONFIG_GUIDE, interpolate: false })
+    })
+  } catch {}
 
   ctx.effect(() => {
     const dispose = ctx.webServer.register({
@@ -83,6 +93,8 @@ export async function apply(ctx, config) {
         const url = new URL(req.url ?? '/', 'http://dsh.local')
         try {
           await ensure()
+          // envs.json 以磁盘为准：每次请求重读，外部修改立即生效
+          await reloadEnvs()
           if (req.method === 'GET' && url.pathname === ROUTE_DEPLOY) {
             await handleDeploy(req, res, url)
             return

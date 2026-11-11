@@ -279,7 +279,10 @@ export async function deployModule(env, m, sshpass, rclone = null) {
   injectEnv(env.buildEnv)
   // 前端模块：frontEnv 注入；Vite loadEnv 对 process.env 中 VITE_ 前缀变量优先级最高，会覆盖 .env 文件
   if (m.kind === 'front') injectEnv(m.frontEnv)
-  const c1 = await runStep(`[${m.name}] 构建: ${buildArgs.join(' ')} ${noteSuffix}`, buildArgs, { cwd: env.projectPath, env: envForGradle, shell: IS_WIN })
+  // 构建执行目录：模块可配 buildDir（相对项目路径或绝对路径），留空 = 项目根目录
+  const buildCwd = m.buildDir ? (path.isAbsolute(m.buildDir) ? m.buildDir : path.join(env.projectPath, m.buildDir)) : env.projectPath
+  const cwdNote = m.buildDir ? `（目录: ${buildCwd}）` : ''
+  const c1 = await runStep(`[${m.name}] 构建: ${buildArgs.join(' ')} ${noteSuffix}${cwdNote}`, buildArgs, { cwd: buildCwd, env: envForGradle, shell: IS_WIN })
   if (c1 !== 0) { broadcast(`[${m.name}] 构建失败，退出码 ${c1}，中止部署\n`); return { code: c1, step: '构建' } }
 
   // 2/3. 多实例滚动发布：按实例列表顺序，逐个 同步 → 远程命令 → 探活；探活通过才更新下一个实例。

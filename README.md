@@ -51,7 +51,7 @@ plugin_manager → action: install_bundle → target: dsh-app-deploy@0.4.0
 
 ## AI 工具
 
-插件向 dsh Agent 注册 4 个工具：`deploy_list_envs`（列出环境与模块，密码已剥离）、`deploy_run`（执行部署并返回日志）、`deploy_history`（执行记录）、`ssh_test_connection`（SSH 连通性测试）。可直接让 AI 代查发布状态或执行部署。
+插件向 dsh Agent 注册 5 个工具：`deploy_list_envs`（列出环境与模块，密码已剥离）、`deploy_save_env`（创建/更新环境配置，整体校验失败不写盘）、`deploy_run`（执行部署并返回日志）、`deploy_history`（执行记录）、`ssh_test_connection`（SSH 连通性测试）。可直接让 AI 代建配置、查发布状态或执行部署。
 
 ## 使用
 

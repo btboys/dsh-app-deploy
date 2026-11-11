@@ -98,6 +98,7 @@ function toModArray(mods, fe) {
         kind: (raw?.kind === 'server' ? 'server' : raw?.kind === 'front' ? 'front' : (id.endsWith('Front') ? 'front' : 'server')),
         enabled: raw?.enabled !== false,
         buildCmd: String(raw?.buildCmd || cmdFromGradle(raw?.gradleTask, raw?.key, raw?.extraArgs)),
+        buildDir: String(raw?.buildDir || ''),
         sshId: String(raw?.sshId || ''),
         instances: normInstances(raw?.instances),
         localPath: String(raw?.localPath || ''),
@@ -116,6 +117,7 @@ function toModArray(mods, fe) {
         id: mk, name: MODULE_NAME[mk] || mk, kind: mk.endsWith('Front') ? 'front' : 'server',
         enabled: m.enabled !== false,
         buildCmd: String(m.buildCmd || cmdFromGradle(m.gradleTask, m.key, m.extraArgs)),
+        buildDir: String(m.buildDir || ''),
         sshId: String(m.sshId || ''),
         instances: normInstances(m.instances),
         localPath: String(m.localPath || ''), remotePath: String(m.remotePath || ''), postCommand: String(m.postCommand || ''),
@@ -154,14 +156,27 @@ function normalizeEnv(e) {
   return env
 }
 
+// 原子写：tmp + rename，避免崩溃/并发时读到半截 JSON
+async function writeEnvsFile(list) {
+  const tmp = envsFile + '.tmp'
+  await fsp.writeFile(tmp, JSON.stringify(list, null, 2))
+  await fsp.rename(tmp, envsFile)
+}
+
 async function loadEnvs() {
   let raw = null
-  try { raw = JSON.parse(await fsp.readFile(envsFile, 'utf8')) } catch {}
-  // 不播种：文件缺失/损坏时初始化为空配置
-  if (!Array.isArray(raw)) {
-    await fsp.writeFile(envsFile, '[]')
-    return []
+  try {
+    raw = JSON.parse(await fsp.readFile(envsFile, 'utf8'))
+  } catch (err) {
+    // 仅文件缺失（首次运行）初始化为空；解析失败（半截写入/人为改坏）保留内存副本，绝不覆写磁盘
+    if (err?.code === 'ENOENT') {
+      await writeEnvsFile([])
+      return []
+    }
+    return envs
   }
+  // 不播种：合法 JSON 但不是数组同样视为损坏，保留内存副本
+  if (!Array.isArray(raw)) return envs
   let migrated = false
   const out = []
   for (const e of raw) {
@@ -178,7 +193,7 @@ async function loadEnvs() {
     const base = templateEnv()
     out.push(normalizeEnv({ ...base, id: String(old.id || ''), name: String(old.name || base.name), note: String(old.note ?? base.note ?? '') }))
   }
-  if (migrated) await fsp.writeFile(envsFile, JSON.stringify(out, null, 2))
+  if (migrated) await writeEnvsFile(out)
   return out
 }
 
@@ -190,10 +205,15 @@ export async function initConfig({ dataDir: dir, defaultProjectPath: projectPath
   envs = await loadEnvs()
 }
 
+// 每次请求重新从磁盘加载 envs.json（外部手改/多实例写入后立即可见），内存只做当次读写的缓存
+export async function reloadEnvs() {
+  envs = await loadEnvs()
+}
+
 export function getEnvs() { return envs }
 
 export async function saveEnvs(next = envs) {
-  await fsp.writeFile(envsFile, JSON.stringify(next, null, 2))
+  await writeEnvsFile(next)
   envs = next
 }
 
@@ -292,6 +312,11 @@ export function validateEnv(e) {
     }
     if (!m.buildCmd.trim()) errs.push(`${m.name || m.id}: 构建命令必填（如 ./gradlew …、mvn …、npm run build）`)
     else if (BAD_CMD.test(m.buildCmd)) errs.push(`${m.name || m.id}: 构建命令含非法字符（禁止引号/; & | \` $ 等）`)
+    // 构建执行目录：留空=项目根目录；可相对（禁止 .. 逃逸）或绝对路径
+    if (m.buildDir) {
+      if (BAD_PATH.test(m.buildDir)) errs.push(`${m.name || m.id}: 构建执行目录含非法字符`)
+      else if (!isAbsPath(m.buildDir) && m.buildDir.split(/[\\/]+/).includes('..')) errs.push(`${m.name || m.id}: 构建执行目录不能包含 ..`)
+    }
     if (!m.localPath) errs.push(`${m.name || m.id}: 本地产物路径必填`)
     else if (BAD_PATH.test(m.localPath)) errs.push(`${m.name || m.id}: 本地产物路径含非法字符`)
     if (!m.remotePath) errs.push(`${m.name || m.id}: 远程目标路径必填`)
