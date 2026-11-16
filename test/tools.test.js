@@ -11,12 +11,19 @@ test('envSummaryForModel：剥离密码，保留目标/模块关键信息', () =
   const s = envSummaryForModel({
     id: 'fxy', name: '分析云', note: '', group: '', projectPath: '/p',
     jdkHome: '', nodeHome: '', pmPath: '',
-    sshs: [{ id: 'prod', name: '生产', host: 'a.com', port: 22, user: 'root', password: 'secret', keyFile: '/k/id_rsa', options: '' }],
+    sshs: [{ id: 'prod', name: '生产', host: 'a.com', port: 22, user: 'root', password: 'secret', keyFile: '/k/id_rsa', options: '', proxyType: 'jump', jumpHost: 'b.com', jumpPort: 2222, jumpUser: 'ops', jumpKeyFile: '/k/bastion' }],
     modules: [{ id: 'bsServer', name: 'bs 服务端', kind: 'server', enabled: true, buildCmd: './gradlew x:bootJar', sshId: 'prod', localPath: 'x.jar', remotePath: '/r', postCommand: '', healthCheckUrl: '' }],
   })
   assert.equal(s.sshs[0].password, undefined)
   assert.equal(s.sshs[0].hasPassword, true)
   assert.equal(s.sshs[0].keyFile, '/k/id_rsa')
+  assert.equal(s.sshs[0].proxyType, 'jump')
+  assert.equal(s.sshs[0].jumpHost, 'b.com')
+  assert.equal(s.sshs[0].jumpPort, 2222)
+  assert.equal(s.sshs[0].jumpUser, 'ops')
+  assert.equal(s.sshs[0].jumpKeyFile, '/k/bastion')
+  assert.equal(s.sshs[0].proxyHost, '')
+  assert.equal(s.sshs[0].proxyPort, 0)
   assert.equal(s.modules[0].sshId, 'prod')
   assert.equal(JSON.stringify(s).includes('secret'), false)
 })

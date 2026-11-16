@@ -26,7 +26,10 @@ function defaultModules() {
 }
 
 function defaultSsh() {
-  return { id: 'default', name: '默认', host: '', port: 22, user: 'root', password: '', keyFile: '', options: '' }
+  return {
+    id: 'default', name: '默认', host: '', port: 22, user: 'root', password: '', keyFile: '', options: '',
+    proxyType: '', jumpHost: '', jumpPort: 22, jumpUser: 'root', jumpKeyFile: '', proxyHost: '', proxyPort: 0,
+  }
 }
 
 function templateEnv() {
@@ -38,6 +41,8 @@ function isNewSchema(e) {
   return !!e && typeof e === 'object' && ((!!e.ssh && typeof e.ssh === 'object') || Array.isArray(e.sshs))
 }
 
+const PROXY_TYPES = ['', 'jump', 'socks5', 'http']
+
 function normalizeSsh(raw, i) {
   return {
     id: String(raw?.id || (i === 0 ? 'default' : 'ssh' + (i + 1))),
@@ -48,6 +53,14 @@ function normalizeSsh(raw, i) {
     password: String(raw?.password ?? ''),
     keyFile: String(raw?.keyFile ?? ''),
     options: String(raw?.options ?? ''),
+    // 跳板/代理：proxyType ''=直连；jump 走 SSH 跳板（仅密钥/agent 认证）；socks5/http 走 nc 代理（不支持代理认证）
+    proxyType: PROXY_TYPES.includes(raw?.proxyType) ? raw.proxyType : '',
+    jumpHost: String(raw?.jumpHost ?? ''),
+    jumpPort: Number(raw?.jumpPort) || 22,
+    jumpUser: String(raw?.jumpUser ?? 'root'),
+    jumpKeyFile: String(raw?.jumpKeyFile ?? ''),
+    proxyHost: String(raw?.proxyHost ?? ''),
+    proxyPort: Number(raw?.proxyPort) || 0, // 0 = 按类型默认（socks5 1080 / http 8080）
   }
 }
 
@@ -244,6 +257,28 @@ export function frontEnvFile(e, m) {
   return null
 }
 
+// 校验跳板/代理字段：返回错误文案（空串 = 合法）。validateEnv 与 testSsh 共用——
+// ProxyCommand 会经 ssh 交给 /bin/sh 执行，测试连接路径拿到的是未保存的原始表单值，拼接前必须过同一套白名单。
+export function validateSshProxy(s, tag = '') {
+  const label = tag ? `SSH 目标「${tag}」: ` : ''
+  if (s.proxyType === 'jump') {
+    if (!/^[a-zA-Z0-9.-]+$/.test(s.jumpHost || '')) return `${label}跳板 host 非法（仅字母/数字/./-）`
+    const rawJp = s.jumpPort
+    const jp = (rawJp === '' || rawJp == null) ? 22 : Number(rawJp)
+    if (!Number.isInteger(jp) || jp < 1 || jp > 65535) return `${label}跳板 port 必须是 1-65535 的整数`
+    if (!/^[a-zA-Z0-9._-]+$/.test(s.jumpUser || 'root')) return `${label}跳板 user 非法`
+    if (s.jumpKeyFile && !isAbsPath(s.jumpKeyFile)) return `${label}跳板私钥路径必须是绝对路径`
+    if (s.jumpKeyFile && BAD_PATH.test(s.jumpKeyFile)) return `${label}跳板私钥路径含非法字符`
+  }
+  if (s.proxyType === 'socks5' || s.proxyType === 'http') {
+    if (!/^[a-zA-Z0-9.-]+$/.test(s.proxyHost || '')) return `${label}代理 host 非法（仅字母/数字/./-）`
+    const rawPp = s.proxyPort
+    const pp = (rawPp === '' || rawPp == null) ? 0 : Number(rawPp)
+    if (!Number.isInteger(pp) || pp < 0 || pp > 65535) return `${label}代理 port 必须是 0-65535 的整数（0=按类型默认）`
+  }
+  return ''
+}
+
 export function validateEnv(e) {
   const errs = []
   if (!/^[a-z0-9-]+$/.test(e.id)) errs.push('ID 只能是小写字母/数字/连字符')
@@ -278,6 +313,9 @@ export function validateEnv(e) {
     if (s.password.includes('\n')) errs.push(`SSH 目标「${tag}」: 密码不能包含换行`)
     if (s.keyFile && !isAbsPath(s.keyFile)) errs.push(`SSH 目标「${tag}」: 私钥路径必须是绝对路径`)
     if (s.keyFile && BAD_PATH.test(s.keyFile)) errs.push(`SSH 目标「${tag}」: 私钥路径含非法字符`)
+    // 跳板/代理：proxyType 合法值已在 normalize 收敛，这里校验各类型必填项与格式
+    const perr = validateSshProxy(s, tag)
+    if (perr) errs.push(perr)
   }
   if (e.expTime && !/^\d{4}-\d{2}-\d{2}$/.test(e.expTime)) errs.push('过期时间必须是 YYYY-MM-DD')
   if (!Array.isArray(e.modules) || !e.modules.length) errs.push('至少需要一个模块')

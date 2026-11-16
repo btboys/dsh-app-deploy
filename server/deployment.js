@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { promises as fsp, existsSync } from 'node:fs'
 import path from 'node:path'
-import { getEnvs, instanceList } from './config.js'
+import { getEnvs, instanceList, validateSshProxy } from './config.js'
 import { getHistory, saveHistory, LOGTAIL_CHARS } from './history.js'
 import { listWorktrees, which, rcloneObscure } from './local-tools.js'
 import { checkHealth } from './health-check.js'
@@ -79,16 +79,43 @@ function runStep(label, args, opts = {}) {
   })
 }
 
+// 组装跳板/代理的 ssh 选项（返回 argv token 数组，字段均经校验白名单，无 shell 元字符）。
+// 统一走 ProxyCommand：跳板与目标认证相互独立（跳板仅用密钥/agent——sshpass 无法应答两级密码提示），
+// 且 rsync -e 字符串与 rclone --sftp-ssh 外部命令拿到的是同一条 ssh 命令行，行为一致。
+// socks5/http 依赖 OpenBSD nc（macOS/多数 Linux 自带；不支持代理自身认证）。
+export function sshProxyTokens(t) {
+  const type = t?.proxyType || ''
+  if (type === 'jump') {
+    const host = (t.jumpHost || '').trim()
+    if (!host) return []
+    const pc = ['ssh', '-p', String(Number(t.jumpPort) || 22), '-o', 'BatchMode=yes']
+    if (t.jumpKeyFile) pc.push('-i', t.jumpKeyFile)
+    pc.push('-W', '%h:%p', `${(t.jumpUser || 'root').trim()}@${host}`)
+    return ['-o', `ProxyCommand=${pc.join(' ')}`]
+  }
+  if (type === 'socks5' || type === 'http') {
+    const host = (t.proxyHost || '').trim()
+    if (!host) return []
+    const port = Number(t.proxyPort) || (type === 'socks5' ? 1080 : 8080)
+    return ['-o', `ProxyCommand=nc -X ${type === 'socks5' ? '5' : 'connect'} -x ${host}:${port} %h %p`]
+  }
+  return []
+}
+
 // 测试 SSH 连通性：BatchMode 禁止交互询问（密码仍走 sshpass），10 秒超时；返回 { ok, ms?, error? }
 export async function testSsh(target) {
   if (!/^[a-zA-Z0-9.-]+$/.test(target.host || '')) return { ok: false, error: 'host 非法' }
   if (!/^[a-zA-Z0-9._-]+$/.test(target.user || '')) return { ok: false, error: 'user 非法' }
   const port = Number(target.port) || 22
   if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: 'port 非法' }
+  // 跳板/代理字段与 validateEnv 同一套白名单校验：测试连接拿到的是未保存的表单值，而 ProxyCommand 会经 /bin/sh 执行
+  const perr = validateSshProxy(target)
+  if (perr) return { ok: false, error: perr }
   const args = ['-p', String(port), '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new']
   // BatchMode 禁止交互询问，但会同时禁掉密码提示导致 sshpass 失效——仅无密码（密钥/agent）时使用
   if (!target.password) args.push('-o', 'BatchMode=yes')
   if (target.keyFile) args.push('-i', target.keyFile)
+  args.push(...sshProxyTokens(target))
   if (target.options) args.push(...String(target.options).trim().split(/\s+/).filter(Boolean))
   args.push(`${target.user}@${target.host}`, 'true')
   let cmd = 'ssh', cargs = args, env = process.env
@@ -235,6 +262,16 @@ export function buildRcloneArgs(target, m, local, rclone) {
   const key = target.keyFile || ((target.options || '').match(/(?:^|\s)-i\s+(\S+)/) || [])[1]
   // 与 ssh/rsync 路径行为一致：私钥可与密码同时存在（rclone 自身会依次尝试）
   if (key) args.push('--sftp-key-file', key)
+  // 跳板/代理：rclone 内部 ssh 库不支持 ProxyCommand，改用外部 ssh（--sftp-ssh）。
+  // 此时 rclone 忽略内置认证（含 --sftp-pass），外部 ssh 须能免密登录（密钥/agent），故仅允许无密码目标
+  const proxyStr = sshProxyTokens(target).join(' ')
+  if (proxyStr) {
+    // 自定义 options 一并带上，与 rsync 的 sshBase 行为一致（如 StrictHostKeyChecking=no）
+    const opts = (target.options || '').trim()
+    const sshCmd = ['ssh', '-p', String(Number(target.port) || 22), key ? `-i ${key}` : '', proxyStr, opts, `${target.user}@${target.host}`]
+      .filter(Boolean).join(' ')
+    args.push('--sftp-ssh', sshCmd)
+  }
   return args
 }
 
@@ -298,7 +335,8 @@ export async function deployModule(env, m, sshpass, rclone = null) {
     const inst = instances[ii]
     const t = inst.target
     const prefix = instances.length > 1 ? `[${m.name} ${inst.label}]` : `[${m.name}]`
-    const sshBase = `ssh -p ${t.port}${t.keyFile ? ' -i ' + t.keyFile : ''}${t.options ? ' ' + t.options : ''}`
+    const proxyStr = sshProxyTokens(t).join(' ')
+    const sshBase = `ssh -p ${t.port}${t.keyFile ? ' -i ' + t.keyFile : ''}${proxyStr ? ' ' + proxyStr : ''}${t.options ? ' ' + t.options : ''}`
     const dest = `${t.user}@${t.host}`
     // 仅当该实例目标配置了密码才挂 sshpass（避免空 SSHPASS 破坏密钥/agent 认证）
     const usePass = sshpass && t.password
@@ -322,6 +360,7 @@ export async function deployModule(env, m, sshpass, rclone = null) {
       if (usePass) sshArgs.push('sshpass', '-e')
       sshArgs.push('ssh', '-p', String(t.port))
       if (t.keyFile) sshArgs.push('-i', t.keyFile)
+      sshArgs.push(...sshProxyTokens(t))
       if (t.options) sshArgs.push(...t.options.trim().split(/\s+/).filter(Boolean))
       sshArgs.push(dest, m.postCommand.trim())
       const c3 = await runStep(`${prefix} 远程执行: ${m.postCommand.trim()}`, sshArgs, { env: rsyncEnv })
@@ -353,6 +392,10 @@ async function runDeployment(env, mods) {
     const sshpass = needSshpass ? await which('sshpass') : null
     if (missing.length) {
       broadcast(`错误: 本机未找到 ${missing.join('、')}（须在 PATH 中）。${IS_WIN ? 'Windows 可安装 rclone 替代 rsync（https://rclone.org），ssh 用系统自带 OpenSSH' : '请先安装 rsync（或 rclone）与 OpenSSH'}\n`)
+      code = 127
+    } else if (!hasRsync && rcloneBin && usedTargets.some(t => t.proxyType && t.password)) {
+      // rclone 回退走 --sftp-ssh 外部 ssh（须免密登录），密码被忽略；该组合不可用须提前拦截
+      broadcast('错误: 有目标配置了跳板/代理且使用密码认证，rclone 同步不支持该组合（rclone 经外部 ssh 连接，须密钥/agent 免密）。请安装 rsync，或改用密钥认证并清空密码\n')
       code = 127
     } else if (needSshpass && !sshpass) {
       broadcast(IS_WIN

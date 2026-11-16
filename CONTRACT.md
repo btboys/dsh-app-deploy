@@ -61,7 +61,7 @@ dataDir/
 | `importEnvs` | `{ content: string }`（JSON 文本：`Env[]` 或 `{ envs: Env[] }`） | `{ envs: Env[], added: string[], overwritten: string[], warning?: string }`；同 ID 覆盖本地、其余追加；任一环境校验失败 → `ok:false` 且不写盘 |
 | `frontEnv` | `{ env: string, module: string }` | `{ text: string }`（front 模块 frontEnv 为空时读 `.env` 参考文本，绝不写回） |
 | `jdks` / `nodes` / `packageManagers` | – | `Array<{ label: string, path: string }>` |
-| `sshTest` | `{ target: { host, port, user, password?, keyFile?, options? } }` | `{ ok: boolean, ms?: number, error?: string }`；BatchMode 仅无密码时用（避免 sshpass 失效），10s 超时 |
+| `sshTest` | `{ target: SshTarget 字段子集（见 2.4，含 proxyType/jump*/proxy*） }` | `{ ok: boolean, ms?: number, error?: string }`；BatchMode 仅无密码时用（避免 sshpass 失效），10s 超时 |
 | `browse` | `{ path?: string, hidden?: boolean, file?: boolean }` | `{ path, parent, dirs: string[], worktrees: Worktree[], files?: string[] }`；`file:true` 时额外列出普通文件供选择（如私钥）；支持 `~/` 开头路径；非法/不可读 → `ok:false` |
 | `git` | `{ env: string, path?: string }` | `{ ok: boolean, isGit?: boolean, branch?: string, shortCommit?: string, detached?: boolean, worktrees: Worktree[] }` |
 | `history` | `{ env?: string, limit?: number }` | `DeployRecord[]`（时间倒序；limit 默认 50，上限 500） |
@@ -103,6 +103,12 @@ interface SshTarget {
   id: string; name: string; host: string; port: number; user: string
   password: string; keyFile: string // 私钥绝对路径，空 = 默认密钥/agent，优先于 options 里的 -i
   options: string
+  // 跳板/代理（均可空，空 = 直连）：
+  proxyType: '' | 'jump' | 'socks5' | 'http'   // 统一走 ssh ProxyCommand
+  jumpHost: string; jumpPort: number           // 跳板端口默认 22
+  jumpUser: string                             // 默认 root；跳板仅密钥/agent 认证（jumpKeyFile 空 = agent）
+  jumpKeyFile: string                          // 跳板私钥绝对路径
+  proxyHost: string; proxyPort: number         // 0 = 按类型默认（socks5 1080 / http 8080）
 }
 
 interface Env {
@@ -133,7 +139,7 @@ interface DeployRecord {
 | `deploy_save_env` | `{ env: object }` | 创建/更新环境（同 id upsert）；整体校验，失败返回全部 `errors` 且不写盘；字段约束由注入系统提示词的 `CONFIG_GUIDE`（`dsh-app-deploy:config-guide` section）描述 |
 | `deploy_run` | `{ env: string, modules?: string[] }` | `{ code, status, durationMs, failedModule, failedStep, logTail }`；同步阻塞至部署结束；省略 modules = 全部启用模块（按配置顺序）；与面板共用部署锁，已有部署进行时失败 |
 | `deploy_history` | `{ env?: string, limit?: number }` | 最近部署记录（新→旧，limit 默认 10、上限 50） |
-| `ssh_test_connection` | `{ host, port?, user, password?, keyFile?, options? }` | `{ ok, ms?, error? }`；10s 超时；密钥/密码/agent 三种认证 |
+| `ssh_test_connection` | `{ host, port?, user, password?, keyFile?, options?, proxyType?, jumpHost?, jumpPort?, jumpUser?, jumpKeyFile?, proxyHost?, proxyPort? }` | `{ ok, ms?, error? }`；10s 超时；密钥/密码/agent 三种认证；支持跳板/代理参数 |
 
 注册方式：`index.js` 注入 `tools` 服务，`apply` 内以宿主解析的 `defineTool`（`@deepseek-ai/dsh-tools`）注册；解析失败仅告警，不影响面板。
 
@@ -149,6 +155,9 @@ interface DeployRecord {
   任一步非零中止并记录 `failedModule/failedStep`；结束若项目存在 gradlew 则停 `./gradlew --stop`。
   子进程用 `node:child_process.spawn`，`stdout/stderr` 流式 `broadcast`。
   `sshpass` 检测用 `execFile('which', ['sshpass'])` 或等价方案；有密码时 `rsync/ssh` 走 `sshpass -e`，密码只放 `SSHPASS` 环境变量。
+  SSH 目标可配跳板/代理（`sshProxyTokens` 统一生成 ProxyCommand 选项：jump = `ssh -p <jumpPort> [-i jumpKeyFile] -W %h:%p jumpUser@jumpHost`，
+  socks5/http = `nc -X 5|connect -x host:port %h %p`）；rsync `-e` 字符串与 ssh argv 注入同一组 token；
+  rclone 回退时改走 `--sftp-ssh` 外部 ssh（忽略内置密码），故「代理/跳板 + 密码」在无 rsync 时预检拦截报错。
 - `server/local-tools.js`：git worktree 列表 / git 分支信息 / JDK/Node/包管理器探测 / 目录与文件浏览（Bun API 换 Node）。
 - `server/history.js`：读写 `history.json`；启动时把残留 `running` 标为 `aborted`；500 条裁剪。
 - `server/health-check.js`：HTTP 2xx + `success === true` + `code === 200`，单次 5s，间隔 3s，总 120s。
@@ -195,7 +204,8 @@ window.__ModuleLoader__.load({
 1. **环境列表**：按 `group` 分组（未分组在最后），选中态；卡片显示 id·note、`user@host:port`、最后构建时间/状态；
    每卡「复制」「删除」。顶部「+ 添加环境」。
 2. **环境编辑**：基本项（名称/ID(新增可改)/备注/分组/项目路径/JDK/Node 路径/Node options/包管理器路径/构建环境变量/expTime）、
-   SSH 目标列表（名称/ID/host/port/user/密码/私钥路径(可浏览选择)/自定义选项，每个目标带「测试连接」按钮，可增删）、
+   SSH 目标列表（名称/ID/host/port/user/密码/私钥路径(可浏览选择)/自定义选项/连接方式(直连/SSH 跳板/SOCKS5/HTTP 代理，
+   跳板含 Host/Port/User/私钥(可浏览)，代理含 Host/Port)，每个目标带「测试连接」按钮，可增删）、
    模块卡片列表（显示名/类型/ID/启用/构建命令(左侧构建工具下拉)/执行目录 buildDir/SSH 目标/本地路径/远程路径/postCommand/健康检查 URL/多实例滚动发布列表(实例 SSH 目标+探活 URL，可增删)/front 模块的 frontEnv 多行文本）；
    增删模块；「保存环境」「删除此环境」；保存后用返回的 `envs` 刷新。
 3. **路径选择**：项目路径「浏览…」弹层（`browse` RPC：目录列表、上级、选择当前、显示隐藏目录开关、worktree 快捷跳转）；私钥路径用 `file:true` 文件选择模式，从 `~/.ssh` 起步。

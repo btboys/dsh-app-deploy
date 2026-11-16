@@ -26,12 +26,14 @@
 >
 > **Windows 主机**：Gradle 构建（`gradlew.bat`）、JDK 自动发现（`JAVA_HOME` + 常见安装目录）、目录浏览均可原生工作。装一个 [rclone](https://rclone.org) 即可获得完整同步能力（含密码认证）；仅当模块配置了远程命令时才需要系统自带 OpenSSH 的 `ssh`——远程命令 + 密码依赖 sshpass（Windows 无此工具），请改用密钥认证（SSH 自定义选项填 `-i 私钥路径`，并清空密码）。
 
+> **跳板 / 代理**：SSH 目标支持「SSH 跳板」（ProxyCommand 转发，跳板仅密钥/agent 认证）与「SOCKS5 / HTTP 代理」（OpenBSD `nc`，不支持代理自身认证）。rsync/ssh 路径下代理可与目标密码同时使用；rclone 回退同步经 `--sftp-ssh` 外部 ssh，密码被忽略——「代理/跳板 + 密码」组合请改用密钥认证或安装 rsync。
+
 ## 安装
 
 插件发布在 npm，通过 DSH 插件管理器直接安装：
 
 ```text
-plugin_manager → action: install_bundle → target: dsh-app-deploy@0.4.0
+plugin_manager → action: install_bundle → target: dsh-app-deploy@0.5.1
 ```
 
 安装后刷新 DSH Web，左侧导航出现「部署」入口。

@@ -218,3 +218,42 @@ test('validateEnv：合法环境零错误，非法字段逐条报出', async () 
   assert.equal(single.length, 1)
   assert.equal(single[0].target.host, 'b.com')
 })
+
+test('SSH 目标跳板/代理：归一化默认值、非法 proxyType 收敛、校验逐条报出', () => {
+  // 旧配置（无新字段）归一化后补齐默认值，且幂等
+  const legacy = normalizeEnv({ id: 'fxy', name: 'x', projectPath: '/p', ssh: { host: 'h', user: 'u' }, modules: [] })
+  assert.equal(legacy.sshs[0].proxyType, '')
+  assert.equal(legacy.sshs[0].jumpPort, 22)
+  assert.equal(legacy.sshs[0].jumpUser, 'root')
+  assert.equal(legacy.sshs[0].proxyPort, 0)
+  assert.deepEqual(normalizeEnv(legacy), legacy)
+
+  // 非法 proxyType 收敛为空（直连）
+  const badType = normalizeEnv({ id: 'fxy', name: 'x', projectPath: '/p', sshs: [{ host: 'h', user: 'u', proxyType: 'telnet' }], modules: [] })
+  assert.equal(badType.sshs[0].proxyType, '')
+
+  const base = normalizeEnv({
+    id: 'fxy', name: 'x', projectPath: '/p',
+    sshs: [{ id: 'prod', name: '生产', host: 'a.com', port: 22, user: 'root' }],
+    modules: [{ id: 'm1', kind: 'server', buildCmd: './gradlew t', localPath: 'j.jar', remotePath: '/r' }],
+  })
+  // 跳板：合法零错误
+  const jump = {
+    ...base,
+    sshs: [{ ...base.sshs[0], proxyType: 'jump', jumpHost: 'bastion.example.com', jumpPort: 2222, jumpUser: 'ops', jumpKeyFile: '/k/bastion' }],
+  }
+  assert.deepEqual(validateEnv(jump), [])
+  // 跳板：非法 host/port/user/私钥逐条报出
+  assert.ok(validateEnv({ ...jump, sshs: [{ ...jump.sshs[0], jumpHost: 'bad host' }] }).some(e => e.includes('跳板 host')))
+  assert.ok(validateEnv({ ...jump, sshs: [{ ...jump.sshs[0], jumpPort: 0 }] }).some(e => e.includes('跳板 port')))
+  assert.ok(validateEnv({ ...jump, sshs: [{ ...jump.sshs[0], jumpUser: 'bad user' }] }).some(e => e.includes('跳板 user')))
+  assert.ok(validateEnv({ ...jump, sshs: [{ ...jump.sshs[0], jumpKeyFile: 'relative/key' }] }).some(e => e.includes('跳板私钥路径必须是绝对路径')))
+  assert.ok(validateEnv({ ...jump, sshs: [{ ...jump.sshs[0], jumpKeyFile: '/k/bad key' }] }).some(e => e.includes('跳板私钥路径含非法字符')))
+  // socks5/http：合法零错误（proxyPort 0 = 默认）
+  const socks = { ...base, sshs: [{ ...base.sshs[0], proxyType: 'socks5', proxyHost: '127.0.0.1', proxyPort: 0 }] }
+  assert.deepEqual(validateEnv(socks), [])
+  const http = { ...base, sshs: [{ ...base.sshs[0], proxyType: 'http', proxyHost: 'proxy.example.com', proxyPort: 8080 }] }
+  assert.deepEqual(validateEnv(http), [])
+  assert.ok(validateEnv({ ...http, sshs: [{ ...http.sshs[0], proxyHost: 'bad host' }] }).some(e => e.includes('代理 host')))
+  assert.ok(validateEnv({ ...http, sshs: [{ ...http.sshs[0], proxyPort: 70000 }] }).some(e => e.includes('代理 port')))
+})

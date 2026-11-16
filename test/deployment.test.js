@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cleanTarget, buildRcloneArgs } from '../server/deployment.js'
+import { cleanTarget, buildRcloneArgs, sshProxyTokens, testSsh } from '../server/deployment.js'
 
 const env = { projectPath: '/proj' }
 const mod = (over) => ({
@@ -61,4 +61,59 @@ test('buildRcloneArgs：无密码时取 SSH 选项里的 -i 作为密钥文件',
   // 专用 keyFile 字段优先于 options 里的 -i
   const withKeyFile = buildRcloneArgs({ host: 'h', port: 22, user: 'u', password: '', keyFile: '/k/id_rsa', options: '-i /other/key' }, mod({ remotePath: '/r' }), '/p/dist/', { bin: 'rclone', pass: null })
   assert.ok(withKeyFile.includes('--sftp-key-file') && withKeyFile[withKeyFile.indexOf('--sftp-key-file') + 1] === '/k/id_rsa')
+})
+
+test('sshProxyTokens：直连为空；跳板/socks5/http 生成 ProxyCommand', () => {
+  assert.deepEqual(sshProxyTokens({}), [])
+  assert.deepEqual(sshProxyTokens({ proxyType: '' }), [])
+  // 跳板：默认端口 22 与默认 user root，可带跳板私钥
+  assert.deepEqual(
+    sshProxyTokens({ proxyType: 'jump', jumpHost: 'bastion.example.com' }),
+    ['-o', 'ProxyCommand=ssh -p 22 -o BatchMode=yes -W %h:%p root@bastion.example.com'],
+  )
+  assert.deepEqual(
+    sshProxyTokens({ proxyType: 'jump', jumpHost: 'b.com', jumpPort: 2222, jumpUser: 'ops', jumpKeyFile: '/k/bastion' }),
+    ['-o', 'ProxyCommand=ssh -p 2222 -o BatchMode=yes -i /k/bastion -W %h:%p ops@b.com'],
+  )
+  // socks5/http：默认端口 1080/8080，host 未配置时不生成
+  assert.deepEqual(
+    sshProxyTokens({ proxyType: 'socks5', proxyHost: '127.0.0.1' }),
+    ['-o', 'ProxyCommand=nc -X 5 -x 127.0.0.1:1080 %h %p'],
+  )
+  assert.deepEqual(
+    sshProxyTokens({ proxyType: 'http', proxyHost: 'proxy.example.com', proxyPort: 3128 }),
+    ['-o', 'ProxyCommand=nc -X connect -x proxy.example.com:3128 %h %p'],
+  )
+  assert.deepEqual(sshProxyTokens({ proxyType: 'socks5', proxyHost: '' }), [])
+})
+
+test('buildRcloneArgs：跳板/代理目标改走 --sftp-ssh 外部 ssh（含自定义 options）', () => {
+  const target = { host: 'h', port: 22, user: 'u', password: '', keyFile: '/k/id_rsa', options: '-o StrictHostKeyChecking=no', proxyType: 'jump', jumpHost: 'b.com', jumpPort: 2222, jumpUser: 'ops', jumpKeyFile: '/k/bastion' }
+  const args = buildRcloneArgs(target, mod({ remotePath: '/r' }), '/p/dist/', { bin: 'rclone', pass: null })
+  const i = args.indexOf('--sftp-ssh')
+  assert.ok(i >= 0)
+  assert.equal(args[i + 1], 'ssh -p 22 -i /k/id_rsa -o ProxyCommand=ssh -p 2222 -o BatchMode=yes -i /k/bastion -W %h:%p ops@b.com -o StrictHostKeyChecking=no u@h')
+  // 直连目标不加 --sftp-ssh
+  const direct = buildRcloneArgs({ host: 'h', port: 22, user: 'u' }, mod({ remotePath: '/r' }), '/p/dist/', { bin: 'rclone', pass: null })
+  assert.ok(!direct.includes('--sftp-ssh'))
+})
+
+test('testSsh：跳板/代理字段拼接 ProxyCommand 前先做白名单校验（校验失败不触网）', async () => {
+  // host 含 shell 元字符：必须在拼接 ProxyCommand（经 /bin/sh 执行）前拦截
+  const badHost = await testSsh({ host: 'h', user: 'u', proxyType: 'jump', jumpHost: 'x;touch /tmp/pwned' })
+  assert.equal(badHost.ok, false)
+  assert.ok(badHost.error.includes('跳板 host'))
+  const badUser = await testSsh({ host: 'h', user: 'u', proxyType: 'jump', jumpHost: 'b.com', jumpUser: 'ops$(id)' })
+  assert.equal(badUser.ok, false)
+  assert.ok(badUser.error.includes('跳板 user'))
+  const badKey = await testSsh({ host: 'h', user: 'u', proxyType: 'jump', jumpHost: 'b.com', jumpKeyFile: 'relative/key' })
+  assert.equal(badKey.ok, false)
+  assert.ok(badKey.error.includes('跳板私钥路径'))
+  const badProxy = await testSsh({ host: 'h', user: 'u', proxyType: 'socks5', proxyHost: '127.0.0.1', proxyPort: 'abc' })
+  assert.equal(badProxy.ok, false)
+  assert.ok(badProxy.error.includes('代理 port'))
+  // 端口 0 非法（默认回落只适用于空值）
+  const badJumpPort = await testSsh({ host: 'h', user: 'u', proxyType: 'jump', jumpHost: 'b.com', jumpPort: 0 })
+  assert.equal(badJumpPort.ok, false)
+  assert.ok(badJumpPort.error.includes('跳板 port'))
 })

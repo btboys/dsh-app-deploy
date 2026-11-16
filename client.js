@@ -115,6 +115,9 @@ window.__ModuleLoader__.load({
           name: s.name || (i === 0 ? '默认' : 'SSH ' + (i + 1)),
           host: s.host || '', port: Number(s.port) || 22, user: s.user || 'root',
           password: s.password || '', keyFile: s.keyFile || '', options: s.options || '',
+          proxyType: s.proxyType || '', jumpHost: s.jumpHost || '', jumpPort: Number(s.jumpPort) || 22,
+          jumpUser: s.jumpUser || 'root', jumpKeyFile: s.jumpKeyFile || '',
+          proxyHost: s.proxyHost || '', proxyPort: Number(s.proxyPort) || 0,
         })),
         modules: (e.modules || []).map(normalizeModule),
       }
@@ -369,7 +372,7 @@ window.__ModuleLoader__.load({
     function EnvForm({
       env, isNew, groups, message, open, onToggle,
       onPatch, onPatchSsh, onPatchModule, onAddModule, onDeleteModule,
-      onSave, onDelete, onBrowse, onBrowseKey,
+      onSave, onDelete, onBrowse, onBrowseKey, onBrowseJumpKey,
       onAddSsh, onDeleteSsh, onTestSsh, sshTest,
       jdks, jdkOpen, jdkRef, onJdkFocus, onJdkPick,
       nodes, nodeOpen, nodeRef, nodeErr, onNodeFocus, onNodePick,
@@ -520,6 +523,58 @@ window.__ModuleLoader__.load({
                         className: 'dad-input', type: 'text', value: s.options, 'aria-label': '自定义 ssh 选项',
                         onChange: (ev) => onPatchSsh(i, { options: ev.target.value }),
                       }))),
+                  h('div', { className: 'dad-row' },
+                    h(Field, { label: '连接方式' },
+                      h('select', {
+                        className: 'dad-select', value: s.proxyType || '', 'aria-label': '连接方式',
+                        onChange: (ev) => onPatchSsh(i, { proxyType: ev.target.value }),
+                      },
+                        h('option', { value: '' }, '直连'),
+                        h('option', { value: 'jump' }, 'SSH 跳板'),
+                        h('option', { value: 'socks5' }, 'SOCKS5 代理'),
+                        h('option', { value: 'http' }, 'HTTP 代理'))),
+                    s.proxyType === 'jump'
+                      ? h(Field, { label: '跳板 Host' },
+                          h('input', {
+                            className: 'dad-input', type: 'text', value: s.jumpHost || '', 'aria-label': '跳板 Host',
+                            onChange: (ev) => onPatchSsh(i, { jumpHost: ev.target.value }),
+                          }))
+                      : null,
+                    s.proxyType === 'jump'
+                      ? h(Field, { label: '跳板 Port' },
+                          h('input', {
+                            className: 'dad-input', type: 'number', value: s.jumpPort || 22, 'aria-label': '跳板 Port',
+                            onChange: (ev) => onPatchSsh(i, { jumpPort: ev.target.value }),
+                          }))
+                      : null),
+                  s.proxyType === 'jump'
+                    ? h('div', { className: 'dad-row' },
+                        h(Field, { label: '跳板 User' },
+                          h('input', {
+                            className: 'dad-input', type: 'text', value: s.jumpUser || 'root', 'aria-label': '跳板 User',
+                            onChange: (ev) => onPatchSsh(i, { jumpUser: ev.target.value }),
+                          })),
+                        h(Field, { label: '跳板私钥路径（留空=默认密钥/agent，跳板仅支持密钥/agent 认证）', wide: true },
+                          h('div', { className: 'dad-inline' },
+                            h('input', {
+                              className: 'dad-input', type: 'text', value: s.jumpKeyFile || '', 'aria-label': '跳板私钥路径',
+                              onChange: (ev) => onPatchSsh(i, { jumpKeyFile: ev.target.value }),
+                            }),
+                            h('button', { type: 'button', className: 'dad-btn', onClick: () => onBrowseJumpKey(i) }, '浏览…'))))
+                    : null,
+                  s.proxyType === 'socks5' || s.proxyType === 'http'
+                    ? h('div', { className: 'dad-row' },
+                        h(Field, { label: '代理 Host' },
+                          h('input', {
+                            className: 'dad-input', type: 'text', value: s.proxyHost || '', 'aria-label': '代理 Host',
+                            onChange: (ev) => onPatchSsh(i, { proxyHost: ev.target.value }),
+                          })),
+                        h(Field, { label: s.proxyType === 'socks5' ? '代理 Port（留空=1080）' : '代理 Port（留空=8080）' },
+                          h('input', {
+                            className: 'dad-input', type: 'number', value: s.proxyPort || '', 'aria-label': '代理 Port',
+                            onChange: (ev) => onPatchSsh(i, { proxyPort: ev.target.value }),
+                          })))
+                    : null,
                   h('div', { className: 'dad-inline' },
                     h('button', {
                       type: 'button', className: 'dad-btn', onClick: () => onTestSsh(i),
@@ -532,7 +587,7 @@ window.__ModuleLoader__.load({
               h('div', { className: 'dad-row' },
                 h('button', { type: 'button', className: 'dad-btn', onClick: onAddSsh }, '+ 添加 SSH 目标')),
               h('div', { className: 'dad-hint' },
-                '密码留空时使用本机 ssh-agent / 密钥认证；密码只经 sshpass 环境变量传递，不会写入日志')),
+                '密码留空时使用本机 ssh-agent / 密钥认证；密码只经 sshpass 环境变量传递，不会写入日志。跳板仅支持密钥/agent 认证（sshpass 无法应答两级密码）；SOCKS5/HTTP 代理走 OpenBSD nc、不支持代理自身认证；代理/跳板 + 密码的组合在 rclone 回退同步下不可用（须 rsync 或改用密钥）')),
             h('div', { className: 'dad-sec' },
               h('div', { className: 'dad-sec-title' }, '构建 / 发布模块'),
               env.modules.length === 0 ? h('div', { className: 'dad-hint' }, '（暂无模块）') : null,
@@ -863,7 +918,7 @@ window.__ModuleLoader__.load({
         const env = {
           id: newEnvId(envs), name: '新环境', note: '', group: '',
           projectPath: defProject, jdkHome: '', nodeHome: '', nodeOptions: '', pmPath: '', buildEnv: '', expTime: '',
-          sshs: [{ id: 'default', name: '默认', host: '', port: 22, user: 'root', password: '', keyFile: '', options: '' }],
+          sshs: [{ id: 'default', name: '默认', host: '', port: 22, user: 'root', password: '', keyFile: '', options: '', proxyType: '', jumpHost: '', jumpPort: 22, jumpUser: 'root', jumpKeyFile: '', proxyHost: '', proxyPort: 0 }],
           modules: [],
         }
         setDraft(env)
@@ -1007,7 +1062,7 @@ window.__ModuleLoader__.load({
           const n = (prev.sshs || []).length + 1
           return {
             ...prev,
-            sshs: [...(prev.sshs || []), { id: 'ssh-' + Date.now().toString(36), name: 'SSH ' + n, host: '', port: 22, user: 'root', password: '', keyFile: '', options: '' }],
+            sshs: [...(prev.sshs || []), { id: 'ssh-' + Date.now().toString(36), name: 'SSH ' + n, host: '', port: 22, user: 'root', password: '', keyFile: '', options: '', proxyType: '', jumpHost: '', jumpPort: 22, jumpUser: 'root', jumpKeyFile: '', proxyHost: '', proxyPort: 0 }],
           }
         })
       }
@@ -1026,6 +1081,9 @@ window.__ModuleLoader__.load({
             host: (t.host || '').trim(), port: Number(t.port) || 22,
             user: (t.user || '').trim() || 'root', password: t.password || '',
             keyFile: (t.keyFile || '').trim(), options: (t.options || '').trim(),
+            proxyType: t.proxyType || '', jumpHost: (t.jumpHost || '').trim(), jumpPort: Number(t.jumpPort) || 22,
+            jumpUser: (t.jumpUser || '').trim() || 'root', jumpKeyFile: (t.jumpKeyFile || '').trim(),
+            proxyHost: (t.proxyHost || '').trim(), proxyPort: Number(t.proxyPort) || 0,
           },
         })
           .then((r) => setSshTest((p) => ({
@@ -1088,6 +1146,13 @@ window.__ModuleLoader__.load({
             password: s.password || '',
             keyFile: (s.keyFile || '').trim(),
             options: (s.options || '').trim(),
+            proxyType: s.proxyType || '',
+            jumpHost: (s.jumpHost || '').trim(),
+            jumpPort: Number(s.jumpPort) || 22,
+            jumpUser: (s.jumpUser || '').trim() || 'root',
+            jumpKeyFile: (s.jumpKeyFile || '').trim(),
+            proxyHost: (s.proxyHost || '').trim(),
+            proxyPort: Number(s.proxyPort) || 0,
           })),
           modules: draft.modules.map((m) => ({
             id: (m.id || '').trim(),
@@ -1164,6 +1229,12 @@ window.__ModuleLoader__.load({
         const t = draft && draft.sshs && draft.sshs[index]
         keyPickRef.current = (p) => patchSsh(index, { keyFile: p })
         loadBrowse(t && t.keyFile ? parentPath(t.keyFile) : '~/.ssh', true, true)
+      }
+      // 选择跳板私钥文件：与目标私钥同一浏览模式（file:true），从跳板私钥所在目录（或 ~/.ssh）起步
+      function openJumpKeyBrowse(index) {
+        const t = draft && draft.sshs && draft.sshs[index]
+        keyPickRef.current = (p) => patchSsh(index, { jumpKeyFile: p })
+        loadBrowse(t && t.jumpKeyFile ? parentPath(t.jumpKeyFile) : '~/.ssh', true, true)
       }
       function navigateBrowse(target) {
         if (!browse) return
@@ -1548,7 +1619,7 @@ window.__ModuleLoader__.load({
             onPatch: patchEnv, onPatchSsh: patchSsh, onPatchModule: patchModule,
             onAddModule: addModule, onDeleteModule: askDeleteModule,
             onAddSsh: addSsh, onDeleteSsh: deleteSsh, onTestSsh: runSshTest, sshTest,
-            onSave: saveEnv, onDelete: deleteCurrentEnv, onBrowse: openBrowse, onBrowseKey: openKeyBrowse,
+            onSave: saveEnv, onDelete: deleteCurrentEnv, onBrowse: openBrowse, onBrowseKey: openKeyBrowse, onBrowseJumpKey: openJumpKeyBrowse,
             jdks, jdkOpen, jdkRef, onJdkFocus: openJdk, onJdkPick: pickJdk,
             nodes, nodeOpen, nodeRef, nodeErr, onNodeFocus: openNode, onNodePick: pickNode,
             pms, pmOpen, pmRef, pmErr, onPmFocus: openPm, onPmPick: pickPm,

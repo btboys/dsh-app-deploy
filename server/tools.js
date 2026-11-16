@@ -14,7 +14,8 @@ Env fields:
 - projectPath: absolute local repo path; no spaces, quotes, or \`; & | \` $\` metacharacters.
 - jdkHome / nodeHome / pmPath: absolute paths, may be empty. nodeHome may point at the install dir or its bin dir; pmPath is a package-manager binary (pnpm/yarn) whose dirname is prepended to PATH for builds.
 - nodeOptions: NODE_OPTIONS for builds. buildEnv: multi-line KEY=VALUE injected into every module build. expTime: YYYY-MM-DD, auto-appended as -PexpTime to gradle server-module builds.
-- sshs[]: { id, name, host (letters/digits/./-), port (1-65535), user, password, keyFile, options }. Password auth requires local sshpass; prefer keyFile (absolute private-key path). options = extra ssh options such as \`-o StrictHostKeyChecking=no\`.
+- sshs[]: { id, name, host (letters/digits/./-), port (1-65535), user, password, keyFile, options, proxyType, jumpHost, jumpPort, jumpUser, jumpKeyFile, proxyHost, proxyPort }. Password auth requires local sshpass; prefer keyFile (absolute private-key path). options = extra ssh options such as \`-o StrictHostKeyChecking=no\`.
+  - proxyType: '' (direct) | 'jump' (SSH bastion via ProxyCommand; bastion auth = jumpKeyFile/agent only — password prompts for both hops are not supported) | 'socks5' | 'http' (via OpenBSD nc; no proxy auth). jump fields: jumpHost, jumpPort (default 22), jumpUser (default root), jumpKeyFile (absolute private key for the bastion). proxy fields: proxyHost, proxyPort (0 = default: socks5 1080 / http 8080). Proxied targets must use keyFile/agent auth when the rclone fallback sync is in use (the rsync path supports proxy + password).
 - modules[]: { id (unique per env), name, kind: 'front'|'server', enabled, buildCmd, buildDir, sshId, localPath, remotePath, postCommand, healthCheckUrl, frontEnv, instances }.
   - buildCmd: plain command, split on whitespace and spawned without a shell (POSIX; Windows 经 cmd 启动) — no quotes, pipes, \`&&\`, \`;\` or other shell metacharacters. Examples: \`./gradlew client:dist\`, \`mvn -DskipTests package\`, \`yarn workspace @catering/tenant-web build\`.
   - buildDir: working directory of buildCmd — relative to projectPath (no \`..\`) or absolute; empty = project root.
@@ -43,6 +44,9 @@ export function envSummaryForModel(e) {
     sshs: (e.sshs || []).map(s => ({
       id: s.id, name: s.name, host: s.host, port: s.port, user: s.user,
       hasPassword: !!s.password, keyFile: s.keyFile || '', options: s.options || '',
+      proxyType: s.proxyType || '', jumpHost: s.jumpHost || '', jumpPort: s.jumpPort || 22,
+      jumpUser: s.jumpUser || 'root', jumpKeyFile: s.jumpKeyFile || '',
+      proxyHost: s.proxyHost || '', proxyPort: s.proxyPort || 0,
     })),
     modules: (e.modules || []).map(m => ({
       id: m.id, name: m.name, kind: m.kind, enabled: m.enabled, buildCmd: m.buildCmd, buildDir: m.buildDir || '', sshId: m.sshId || '',
@@ -176,6 +180,13 @@ export function registerTools(ctx, defineTool, ensure) {
       password: { type: 'string', description: 'SSH password; omit to use keyFile or agent' },
       keyFile: { type: 'string', description: 'Absolute private key path; takes precedence over options -i' },
       options: { type: 'string', description: 'Extra ssh options, e.g. -o StrictHostKeyChecking=no' },
+      proxyType: { type: 'string', description: "'' = direct, 'jump' = SSH bastion, 'socks5' / 'http' = proxy via OpenBSD nc" },
+      jumpHost: { type: 'string', description: 'Bastion host (proxyType=jump)' },
+      jumpPort: { type: 'integer', description: 'Bastion port, default 22' },
+      jumpUser: { type: 'string', description: 'Bastion user, default root' },
+      jumpKeyFile: { type: 'string', description: 'Bastion private key (absolute path); bastion auth is key/agent only' },
+      proxyHost: { type: 'string', description: 'Proxy host (proxyType=socks5/http)' },
+      proxyPort: { type: 'integer', description: 'Proxy port; 0 = default (socks5 1080 / http 8080)' },
     },
     output: {
       schema: {
@@ -190,7 +201,13 @@ export function registerTools(ctx, defineTool, ensure) {
     },
     execute: async (args) => {
       await ready()
-      return testSsh({ host: args.host, port: args.port || 22, user: args.user, password: args.password || '', keyFile: args.keyFile || '', options: args.options || '' })
+      return testSsh({
+        host: args.host, port: args.port || 22, user: args.user, password: args.password || '',
+        keyFile: args.keyFile || '', options: args.options || '',
+        proxyType: args.proxyType || '', jumpHost: args.jumpHost || '', jumpPort: args.jumpPort || 22,
+        jumpUser: args.jumpUser || 'root', jumpKeyFile: args.jumpKeyFile || '',
+        proxyHost: args.proxyHost || '', proxyPort: args.proxyPort || 0,
+      })
     },
   }))
 }
