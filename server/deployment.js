@@ -367,7 +367,7 @@ export async function deployModule(env, m, sshpass, rclone = null) {
       if (c3 !== 0) { broadcast(`${prefix} 远程命令失败，退出码 ${c3}，中止部署\n`); return { code: c3, step: instances.length > 1 ? `远程命令（${inst.label}）` : '远程命令' } }
     }
     // 探活：通过才继续下一个实例（滚动发布闸门）
-    if (!await checkHealth(inst.healthCheckUrl || '', message => broadcast(`${prefix} ${message}`))) {
+    if (!await checkHealth(inst.healthCheckUrl || '', inst.healthCheckPattern || '', message => broadcast(`${prefix} ${message}`))) {
       return { code: 1, step: instances.length > 1 ? `健康检查（${inst.label}）` : '健康检查' }
     }
   }

@@ -208,6 +208,33 @@ test('validateEnv：合法环境零错误，非法字段逐条报出', async () 
   assert.deepEqual(validateEnv(instEnv), [])
   assert.ok(validateEnv({ ...instEnv, modules: [{ ...instEnv.modules[0], instances: [{ sshId: 'nope' }] }] }).some(e => e.includes('实例1 的 SSH 目标')))
   assert.ok(validateEnv({ ...instEnv, modules: [{ ...instEnv.modules[0], instances: [{ sshId: 'n1', healthCheckUrl: 'ftp://x' }] }] }).some(e => e.includes('实例1 的健康检查 URL')))
+  // 成功内容正则：归一化、instanceList 回落、非法正则校验
+  const patEnv = normalizeEnv({
+    id: 'fxy', name: 'x', projectPath: '/p',
+    sshs: [{ id: 'n1', name: '节点1', host: 'a.com', port: 22, user: 'root' }],
+    modules: [{
+      id: 'bsServer', kind: 'server', buildCmd: './gradlew t', localPath: 'j.jar', remotePath: '/r',
+      healthCheckUrl: 'https://shared.com/api/', healthCheckPattern: '"success"\\s*:\\s*true',
+      instances: [{ sshId: 'n1' }, { sshId: 'n1', healthCheckPattern: 'READY' }],
+    }],
+  })
+  assert.deepEqual(validateEnv(patEnv), [])
+  const plist = instanceList(patEnv, patEnv.modules[0])
+  assert.equal(plist[0].healthCheckPattern, '"success"\\s*:\\s*true')
+  assert.equal(plist[1].healthCheckPattern, 'READY')
+  assert.ok(validateEnv({ ...patEnv, modules: [{ ...patEnv.modules[0], healthCheckPattern: '([bad' }] }).some(e => e.includes('成功内容正则不合法')))
+  assert.ok(validateEnv({ ...patEnv, modules: [{ ...patEnv.modules[0], instances: [{ sshId: 'n1', healthCheckPattern: '([bad' }] }] }).some(e => e.includes('实例1 的健康检查成功内容正则不合法')))
+  assert.ok(validateEnv({ ...patEnv, modules: [{ ...patEnv.modules[0], healthCheckPattern: '/ok/g' }] }).some(e => e.includes('不支持 g')))
+  // 有正则无探活 URL（展开实例级回落后）保存时拒绝
+  const noUrl = normalizeEnv({
+    id: 'fxy', name: 'x', projectPath: '/p',
+    sshs: [{ id: 'n1', name: '节点1', host: 'a.com', port: 22, user: 'root' }],
+    modules: [{ id: 'bsServer', kind: 'server', buildCmd: './gradlew t', localPath: 'j.jar', remotePath: '/r', healthCheckPattern: 'OK' }],
+  })
+  assert.ok(validateEnv(noUrl).some(e => e.includes('没有健康检查 URL')))
+  // 实例无 URL 但模块有 URL → 展开后有 URL，合法
+  const instFallbackOk = { ...patEnv, modules: [{ ...patEnv.modules[0], instances: [{ sshId: 'n1', healthCheckPattern: 'READY' }] }] }
+  assert.deepEqual(validateEnv(instFallbackOk), [])
   const list = instanceList(instEnv, instEnv.modules[0])
   assert.equal(list.length, 2)
   assert.equal(list[0].target.host, 'a.com')

@@ -94,9 +94,11 @@ interface ModuleCfg {
   buildCmd: string // 通用构建命令，如 ./gradlew … / mvn -DskipTests package / npm run build
   buildDir?: string // 构建命令执行目录：相对项目路径（禁 ..）或绝对路径；空 = 项目根目录
   sshId: string // 发布目标（env.sshs 之一），空 = 第一个目标
-  instances: Array<{ sshId: string, healthCheckUrl: string }> // 多实例滚动发布；空 = 单实例。实例探活 URL 可空（回落模块级）
+  instances: Array<{ sshId: string, healthCheckUrl: string, healthCheckPattern?: string }> // 多实例滚动发布；空 = 单实例。实例探活 URL/成功正则可空（回落模块级）
   localPath: string; remotePath: string; postCommand: string
-  healthCheckUrl?: string; frontEnv: string
+  healthCheckUrl?: string // 探活地址（可空 = 跳过）；HTTP 状态码 200 必需
+  healthCheckPattern?: string // 成功内容正则（可空 = 只看 200）；非空时响应文本必须匹配；支持纯字符串或 /正则/flags（仅 i m s u y，不支持 g）；配置正则时必须同时有探活 URL（保存时校验）
+  frontEnv: string
 }
 
 interface SshTarget {
@@ -160,7 +162,7 @@ interface DeployRecord {
   rclone 回退时改走 `--sftp-ssh` 外部 ssh（忽略内置密码），故「代理/跳板 + 密码」在无 rsync 时预检拦截报错。
 - `server/local-tools.js`：git worktree 列表 / git 分支信息 / JDK/Node/包管理器探测 / 目录与文件浏览（Bun API 换 Node）。
 - `server/history.js`：读写 `history.json`；启动时把残留 `running` 标为 `aborted`；500 条裁剪。
-- `server/health-check.js`：HTTP 2xx + `success === true` + `code === 200`，单次 5s，间隔 3s，总 120s。
+- `server/health-check.js`：HTTP 状态码 200 必需；`healthCheckPattern` 非空时响应文本还须匹配该正则（支持 /正则/flags 写法；非法正则在保存时校验拒绝，运行期兜底直接失败；有正则无 URL 保存时拒绝），单次 5s，间隔 3s，总 120s。
 
 ### 2.6 Bun → Node 替换清单
 
@@ -206,7 +208,7 @@ window.__ModuleLoader__.load({
 2. **环境编辑**：基本项（名称/ID(新增可改)/备注/分组/项目路径/JDK/Node 路径/Node options/包管理器路径/构建环境变量/expTime）、
    SSH 目标列表（名称/ID/host/port/user/密码/私钥路径(可浏览选择)/自定义选项/连接方式(直连/SSH 跳板/SOCKS5/HTTP 代理，
    跳板含 Host/Port/User/私钥(可浏览)，代理含 Host/Port)，每个目标带「测试连接」按钮，可增删）、
-   模块卡片列表（显示名/类型/ID/启用/构建命令(左侧构建工具下拉)/执行目录 buildDir/SSH 目标/本地路径/远程路径/postCommand/健康检查 URL/多实例滚动发布列表(实例 SSH 目标+探活 URL，可增删)/front 模块的 frontEnv 多行文本）；
+   模块卡片列表（显示名/类型/ID/启用/构建命令(左侧构建工具下拉)/执行目录 buildDir/SSH 目标/本地路径/远程路径/postCommand/健康检查 URL/成功内容正则/多实例滚动发布列表(实例 SSH 目标+探活 URL+成功正则，可增删)/front 模块的 frontEnv 多行文本）；
    增删模块；「保存环境」「删除此环境」；保存后用返回的 `envs` 刷新。
 3. **路径选择**：项目路径「浏览…」弹层（`browse` RPC：目录列表、上级、选择当前、显示隐藏目录开关、worktree 快捷跳转）；私钥路径用 `file:true` 文件选择模式，从 `~/.ssh` 起步。
 4. **JDK/Node/包管理器 下拉**：聚焦对应输入框时展示 `jdks`/`nodes`/`packageManagers` 列表，点选填入；构建命令左侧另有构建工具（Gradle/Maven/npm/pnpm/yarn）下拉，选中填充命令模板。

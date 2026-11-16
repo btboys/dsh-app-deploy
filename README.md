@@ -64,7 +64,7 @@ plugin_manager → action: install_bundle → target: dsh-app-deploy@0.5.1
   → rsync [-r -t -z] 本地产物 → user@host:远程路径（前端加 --delete）
     （无 rsync 时回退 rclone：前端 rclone sync / 服务端 rclone copy，走 SFTP）
   → ssh 远程命令（可空）
-  → 健康检查（可空：HTTP 2xx + success=true + code=200）
+  → 健康检查（可空：HTTP 200 必需，可选成功内容正则匹配响应文本）
 ```
 
 任一步非零中止本轮部署并记录失败模块 / 阶段。

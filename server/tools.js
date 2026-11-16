@@ -16,12 +16,13 @@ Env fields:
 - nodeOptions: NODE_OPTIONS for builds. buildEnv: multi-line KEY=VALUE injected into every module build. expTime: YYYY-MM-DD, auto-appended as -PexpTime to gradle server-module builds.
 - sshs[]: { id, name, host (letters/digits/./-), port (1-65535), user, password, keyFile, options, proxyType, jumpHost, jumpPort, jumpUser, jumpKeyFile, proxyHost, proxyPort }. Password auth requires local sshpass; prefer keyFile (absolute private-key path). options = extra ssh options such as \`-o StrictHostKeyChecking=no\`.
   - proxyType: '' (direct) | 'jump' (SSH bastion via ProxyCommand; bastion auth = jumpKeyFile/agent only — password prompts for both hops are not supported) | 'socks5' | 'http' (via OpenBSD nc; no proxy auth). jump fields: jumpHost, jumpPort (default 22), jumpUser (default root), jumpKeyFile (absolute private key for the bastion). proxy fields: proxyHost, proxyPort (0 = default: socks5 1080 / http 8080). Proxied targets must use keyFile/agent auth when the rclone fallback sync is in use (the rsync path supports proxy + password).
-- modules[]: { id (unique per env), name, kind: 'front'|'server', enabled, buildCmd, buildDir, sshId, localPath, remotePath, postCommand, healthCheckUrl, frontEnv, instances }.
+- modules[]: { id (unique per env), name, kind: 'front'|'server', enabled, buildCmd, buildDir, sshId, localPath, remotePath, postCommand, healthCheckUrl, healthCheckPattern, frontEnv, instances }.
   - buildCmd: plain command, split on whitespace and spawned without a shell (POSIX; Windows 经 cmd 启动) — no quotes, pipes, \`&&\`, \`;\` or other shell metacharacters. Examples: \`./gradlew client:dist\`, \`mvn -DskipTests package\`, \`yarn workspace @catering/tenant-web build\`.
   - buildDir: working directory of buildCmd — relative to projectPath (no \`..\`) or absolute; empty = project root.
   - localPath: built artifact path relative to projectPath (or absolute). Front-end pre-build cleanup derives its target from \`/dist\` in localPath — a custom output dir still deploys, but skips the clean (warning logged). A trailing slash syncs the directory's contents (rsync semantics), otherwise the directory itself. Front-end sync mirrors (--delete, excludes .user.ini); server sync never deletes.
   - remotePath: destination path on the SSH host. postCommand: remote shell command run after sync (may be empty). healthCheckUrl: HTTP/HTTPS probe after deploy (empty = skip).
-  - frontEnv: multi-line KEY=VALUE for front modules (VITE_* vars override .env files). instances: optional [{ sshId, healthCheckUrl }] for rolling multi-instance publish.
+  - healthCheckPattern: optional success-content regex (matched against the response TEXT; HTTP status must be 200 regardless; empty = status 200 alone is enough). Plain string or /regex/flags form (flags: i m s u y only, no g). A pattern without any healthCheckUrl is rejected at save time.
+  - frontEnv: multi-line KEY=VALUE for front modules (VITE_* vars override .env files). instances: optional [{ sshId, healthCheckUrl, healthCheckPattern }] for rolling multi-instance publish (per-instance fields fall back to the module's when empty).
 - deploy_list_envs never returns passwords (only hasPassword); when updating an env you must re-supply the password or keyFile.`
 
 // AI 创建/更新环境配置：整体校验通过才写盘（同 id 覆盖，否则追加）
@@ -51,7 +52,8 @@ export function envSummaryForModel(e) {
     modules: (e.modules || []).map(m => ({
       id: m.id, name: m.name, kind: m.kind, enabled: m.enabled, buildCmd: m.buildCmd, buildDir: m.buildDir || '', sshId: m.sshId || '',
       localPath: m.localPath, remotePath: m.remotePath, postCommand: m.postCommand, healthCheckUrl: m.healthCheckUrl || '',
-      instances: (m.instances || []).map((i) => ({ sshId: i.sshId, healthCheckUrl: i.healthCheckUrl })),
+      healthCheckPattern: m.healthCheckPattern || '',
+      instances: (m.instances || []).map((i) => ({ sshId: i.sshId, healthCheckUrl: i.healthCheckUrl, healthCheckPattern: i.healthCheckPattern || '' })),
     })),
   }
 }

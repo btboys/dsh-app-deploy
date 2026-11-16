@@ -1,5 +1,6 @@
 import { promises as fsp } from 'node:fs'
 import path from 'node:path'
+import { compilePattern } from './health-check.js'
 
 // ---------- 状态：数据目录由插件 Config/dataDir 决定，initConfig 时绑定 ----------
 let dataDir = ''
@@ -81,11 +82,12 @@ export function targetFor(env, m) {
 // 无实例配置 = 模块自身单实例（用模块默认目标与健康检查 URL）
 export function instanceList(env, m) {
   if (!Array.isArray(m?.instances) || !m.instances.length) {
-    return [{ target: targetFor(env, m), healthCheckUrl: (m?.healthCheckUrl || '').trim(), label: '' }]
+    return [{ target: targetFor(env, m), healthCheckUrl: (m?.healthCheckUrl || '').trim(), healthCheckPattern: (m?.healthCheckPattern || '').trim(), label: '' }]
   }
   return m.instances.map((inst, i) => ({
     target: targetFor(env, { ...m, sshId: inst.sshId }),
     healthCheckUrl: (inst.healthCheckUrl || m.healthCheckUrl || '').trim(),
+    healthCheckPattern: (inst.healthCheckPattern || m.healthCheckPattern || '').trim(),
     label: `实例${i + 1}`,
   }))
 }
@@ -94,7 +96,7 @@ export function instanceList(env, m) {
 function normInstances(raw) {
   if (!Array.isArray(raw)) return []
   return raw
-    .map((i) => ({ sshId: String(i?.sshId || ''), healthCheckUrl: String(i?.healthCheckUrl || '').trim() }))
+    .map((i) => ({ sshId: String(i?.sshId || ''), healthCheckUrl: String(i?.healthCheckUrl || '').trim(), healthCheckPattern: String(i?.healthCheckPattern || '').trim() }))
     .filter((i) => i.sshId)
 }
 
@@ -118,6 +120,7 @@ function toModArray(mods, fe) {
         remotePath: String(raw?.remotePath || ''),
         postCommand: String(raw?.postCommand || ''),
         healthCheckUrl: String(raw?.healthCheckUrl || '').trim(),
+        healthCheckPattern: String(raw?.healthCheckPattern || '').trim(),
         frontEnv: String(raw?.frontEnv || ''),
       })
     }
@@ -134,6 +137,8 @@ function toModArray(mods, fe) {
         sshId: String(m.sshId || ''),
         instances: normInstances(m.instances),
         localPath: String(m.localPath || ''), remotePath: String(m.remotePath || ''), postCommand: String(m.postCommand || ''),
+        healthCheckUrl: String(m.healthCheckUrl || '').trim(),
+        healthCheckPattern: String(m.healthCheckPattern || '').trim(),
         frontEnv: feText,
       })
     }
@@ -336,6 +341,17 @@ export function validateEnv(e) {
         if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('invalid URL')
       } catch { errs.push(`${m.name || m.id}: 健康检查 URL 必须是 HTTP/HTTPS 地址，且不能包含用户名或密码`) }
     }
+    if (m.healthCheckPattern) {
+      const { error } = compilePattern(m.healthCheckPattern)
+      if (error) errs.push(`${m.name || m.id}: 健康检查成功内容正则不合法（${error}）`)
+    }
+    // 有成功正则却无探活 URL（按实例级回落展开后）→ 正则永远不会生效
+    for (const inst of instanceList(e, m)) {
+      if (inst.healthCheckPattern && !inst.healthCheckUrl) {
+        errs.push(`${m.name || m.id}: 已配置成功内容正则，但展开后的实例没有健康检查 URL（正则需要探活 URL 才会生效）`)
+        break
+      }
+    }
     if (!m.enabled) continue
     if (m.sshId && !sshList.some((s) => s.id === m.sshId)) errs.push(`${m.name || m.id}: SSH 目标「${m.sshId}」不存在`)
     for (let ii = 0; ii < (m.instances || []).length; ii++) {
@@ -346,6 +362,10 @@ export function validateEnv(e) {
           const url = new URL(inst.healthCheckUrl)
           if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('invalid URL')
         } catch { errs.push(`${m.name || m.id}: 实例${ii + 1} 的健康检查 URL 必须是 HTTP/HTTPS 地址，且不能包含用户名或密码`) }
+      }
+      if (inst.healthCheckPattern) {
+        const { error } = compilePattern(inst.healthCheckPattern)
+        if (error) errs.push(`${m.name || m.id}: 实例${ii + 1} 的健康检查成功内容正则不合法（${error}）`)
       }
     }
     if (!m.buildCmd.trim()) errs.push(`${m.name || m.id}: 构建命令必填（如 ./gradlew …、mvn …、npm run build）`)
