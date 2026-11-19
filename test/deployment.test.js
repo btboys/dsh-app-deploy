@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cleanTarget, buildRcloneArgs, sshProxyTokens, testSsh } from '../server/deployment.js'
+import { execFileSync } from 'node:child_process'
+import { cleanTarget, buildRcloneArgs, sshProxyTokens, sshProxyShellArg, buildSshBase, testSsh } from '../server/deployment.js'
 
 const env = { projectPath: '/proj' }
 const mod = (over) => ({
@@ -87,15 +88,39 @@ test('sshProxyTokens：直连为空；跳板/socks5/http 生成 ProxyCommand', (
   assert.deepEqual(sshProxyTokens({ proxyType: 'socks5', proxyHost: '' }), [])
 })
 
-test('buildRcloneArgs：跳板/代理目标改走 --sftp-ssh 外部 ssh（含自定义 options）', () => {
+test('buildRcloneArgs：跳板/代理目标改走 --sftp-ssh 外部 ssh（双引号包裹 ProxyCommand）', () => {
   const target = { host: 'h', port: 22, user: 'u', password: '', keyFile: '/k/id_rsa', options: '-o StrictHostKeyChecking=no', proxyType: 'jump', jumpHost: 'b.com', jumpPort: 2222, jumpUser: 'ops', jumpKeyFile: '/k/bastion' }
   const args = buildRcloneArgs(target, mod({ remotePath: '/r' }), '/p/dist/', { bin: 'rclone', pass: null })
   const i = args.indexOf('--sftp-ssh')
   assert.ok(i >= 0)
-  assert.equal(args[i + 1], 'ssh -p 22 -i /k/id_rsa -o ProxyCommand=ssh -p 2222 -o BatchMode=yes -i /k/bastion -W %h:%p ops@b.com -o StrictHostKeyChecking=no u@h')
+  assert.equal(args[i + 1], 'ssh -p 22 -i /k/id_rsa -o "ProxyCommand=ssh -p 2222 -o BatchMode=yes -i /k/bastion -W %h:%p ops@b.com" -o StrictHostKeyChecking=no u@h')
   // 直连目标不加 --sftp-ssh
   const direct = buildRcloneArgs({ host: 'h', port: 22, user: 'u' }, mod({ remotePath: '/r' }), '/p/dist/', { bin: 'rclone', pass: null })
   assert.ok(!direct.includes('--sftp-ssh'))
+})
+
+test('buildSshBase：跳板目标单引号包裹 ProxyCommand，直连不变', () => {
+  const jump = { host: 'h', port: 22, user: 'u', keyFile: '/k/id_rsa', options: '-o StrictHostKeyChecking=no', proxyType: 'jump', jumpHost: 'b.com', jumpPort: 2222, jumpUser: 'ops', jumpKeyFile: '/k/bastion' }
+  assert.equal(
+    buildSshBase(jump),
+    "ssh -p 22 -i /k/id_rsa -o 'ProxyCommand=ssh -p 2222 -o BatchMode=yes -i /k/bastion -W %h:%p ops@b.com' -o StrictHostKeyChecking=no",
+  )
+  assert.equal(buildSshBase({ host: 'h', port: 22 }), 'ssh -p 22')
+  const socks = { host: 'h', port: 22, proxyType: 'socks5', proxyHost: '127.0.0.1' }
+  assert.equal(buildSshBase(socks), "ssh -p 22 -o 'ProxyCommand=nc -X 5 -x 127.0.0.1:1080 %h %p'")
+})
+
+// rsync -e 命令行经 /bin/sh 分词（rsync 把整串拼进 sh -c 命令文本）：回环验证引号生效，
+// 外层 ssh 必须把 ProxyCommand 值收为单个参数（回归：未引号时报 Bad stdio forwarding specification '%h:%p'）
+test('buildSshBase：经 sh 分词后 ProxyCommand 为单个 argv（POSIX）', { skip: process.platform === 'win32' }, () => {
+  const jump = { host: 'h', port: 22, keyFile: '/k/id_rsa', options: '-o StrictHostKeyChecking=no', proxyType: 'jump', jumpHost: 'b.com', jumpPort: 2222, jumpUser: 'ops', jumpKeyFile: '/k/bastion' }
+  const out = execFileSync('bash', ['-c', `set -f; set -- ${buildSshBase(jump)}; for a; do echo "$a"; done`], { encoding: 'utf8' })
+  const tokens = out.trim().split('\n')
+  assert.deepEqual(tokens, [
+    'ssh', '-p', '22', '-i', '/k/id_rsa',
+    '-o', 'ProxyCommand=ssh -p 2222 -o BatchMode=yes -i /k/bastion -W %h:%p ops@b.com',
+    '-o', 'StrictHostKeyChecking=no',
+  ])
 })
 
 test('testSsh：跳板/代理字段拼接 ProxyCommand 前先做白名单校验（校验失败不触网）', async () => {

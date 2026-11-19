@@ -9,6 +9,11 @@ window.__ModuleLoader__.load({
     const SSE = API + '/deploy'
     const HSTATUS = { success: '成功', failed: '失败', running: '进行中', aborted: '中断' }
     const KIND_LABEL = { front: '前端', server: '服务端' }
+    const ENV_TABS = [
+      { id: 'basic', label: '基本' },
+      { id: 'ssh', label: 'SSH 目标' },
+      { id: 'modules', label: '模块' },
+    ]
 
     // ---------- 基础工具 ----------
 
@@ -381,7 +386,7 @@ window.__ModuleLoader__.load({
     }
 
     function EnvForm({
-      env, isNew, groups, message, open, onToggle,
+      env, isNew, groups, message, open, tab, onTab, onToggle,
       onPatch, onPatchSsh, onPatchModule, onAddModule, onDeleteModule,
       onSave, onDelete, onBrowse, onBrowseKey, onBrowseJumpKey,
       onAddSsh, onDeleteSsh, onTestSsh, sshTest,
@@ -392,6 +397,27 @@ window.__ModuleLoader__.load({
       const title = env ? '环境配置' : '选择左侧环境进行编辑'
       const groupOptions = groups.map((g) => h('option', { key: g, value: g }))
       const sshList = env ? (env.sshs || []) : []
+      const active = ENV_TABS.some((t) => t.id === tab) ? tab : 'basic'
+      const sshCount = sshList.length
+      const moduleCount = env ? env.modules.length : 0
+      function tabCount(id) {
+        if (id === 'ssh') return sshCount
+        if (id === 'modules') return moduleCount
+        return 0
+      }
+      function onTabKey(ev) {
+        if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight' && ev.key !== 'Home' && ev.key !== 'End') return
+        const i = ENV_TABS.findIndex((t) => t.id === active)
+        let next = i
+        if (ev.key === 'ArrowLeft') next = (i + ENV_TABS.length - 1) % ENV_TABS.length
+        else if (ev.key === 'ArrowRight') next = (i + 1) % ENV_TABS.length
+        else if (ev.key === 'Home') next = 0
+        else next = ENV_TABS.length - 1
+        ev.preventDefault()
+        onTab(ENV_TABS[next].id)
+        const btn = ev.currentTarget.parentElement && ev.currentTarget.parentElement.querySelector('[data-tab="' + ENV_TABS[next].id + '"]')
+        if (btn) btn.focus()
+      }
       return h('div', { className: 'dad-card' },
         h('div', { className: 'dad-card-head' },
           h('span', { className: 'dad-card-title', title }, title),
@@ -405,8 +431,28 @@ window.__ModuleLoader__.load({
         !env
           ? h('div', { className: 'dad-hint' }, '选择或新增一个环境后编辑配置。')
           : (open ? h('div', null,
-            h('div', { className: 'dad-sec' },
-              h('div', { className: 'dad-sec-title' }, '基本'),
+            h('div', { className: 'dad-tabs', role: 'tablist', 'aria-label': '环境配置' },
+              ENV_TABS.map((t) => {
+                const selected = t.id === active
+                const count = tabCount(t.id)
+                return h('button', {
+                  key: t.id, type: 'button', role: 'tab',
+                  className: 'dad-tab', 'data-tab': t.id,
+                  id: 'dad-env-tab-' + t.id,
+                  'aria-selected': selected ? 'true' : 'false',
+                  'aria-controls': 'dad-env-panel-' + t.id,
+                  tabIndex: selected ? 0 : -1,
+                  onClick: () => onTab(t.id),
+                  onKeyDown: onTabKey,
+                },
+                  t.label,
+                  count ? h('span', { className: 'dad-tab-count' }, String(count)) : null)
+              })),
+            h('div', {
+              className: 'dad-sec', role: 'tabpanel', id: 'dad-env-panel-basic',
+              'aria-labelledby': 'dad-env-tab-basic', hidden: active !== 'basic',
+            },
+              active !== 'basic' ? null : h('div', null,
               h('div', { className: 'dad-row' },
                 h(Field, { label: '名称' },
                   h('input', {
@@ -475,9 +521,13 @@ window.__ModuleLoader__.load({
                   h('input', {
                     className: 'dad-input', type: 'date', value: env.expTime, 'aria-label': '过期时间',
                     onChange: (ev) => onPatch({ expTime: ev.target.value }),
-                  })))),
-            h('div', { className: 'dad-sec' },
-              h('div', { className: 'dad-sec-title' }, 'SSH 目标（模块可选发布到任一目标）'),
+                  }))))),
+            h('div', {
+              className: 'dad-sec', role: 'tabpanel', id: 'dad-env-panel-ssh',
+              'aria-labelledby': 'dad-env-tab-ssh', hidden: active !== 'ssh',
+            },
+              active !== 'ssh' ? null : h('div', null,
+              h('div', { className: 'dad-sec-title' }, '模块可选发布到任一目标'),
               sshList.map((s, i) => {
                 const t = (sshTest || {})[i]
                 return h('div', { key: s.id || i, className: 'dad-sshtarget' },
@@ -598,8 +648,12 @@ window.__ModuleLoader__.load({
               h('div', { className: 'dad-row' },
                 h('button', { type: 'button', className: 'dad-btn', onClick: onAddSsh }, '+ 添加 SSH 目标')),
               h('div', { className: 'dad-hint' },
-                '密码留空时使用本机 ssh-agent / 密钥认证；密码只经 sshpass 环境变量传递，不会写入日志。跳板仅支持密钥/agent 认证（sshpass 无法应答两级密码）；SOCKS5/HTTP 代理走 OpenBSD nc、不支持代理自身认证；代理/跳板 + 密码的组合在 rclone 回退同步下不可用（须 rsync 或改用密钥）')),
-            h('div', { className: 'dad-sec' },
+                '密码留空时使用本机 ssh-agent / 密钥认证；密码只经 sshpass 环境变量传递，不会写入日志。跳板仅支持密钥/agent 认证（sshpass 无法应答两级密码）；SOCKS5/HTTP 代理走 OpenBSD nc、不支持代理自身认证；代理/跳板 + 密码的组合在 rclone 回退同步下不可用（须 rsync 或改用密钥）'))),
+            h('div', {
+              className: 'dad-sec', role: 'tabpanel', id: 'dad-env-panel-modules',
+              'aria-labelledby': 'dad-env-tab-modules', hidden: active !== 'modules',
+            },
+              active !== 'modules' ? null : h('div', null,
               h('div', { className: 'dad-sec-title' }, '构建 / 发布模块'),
               env.modules.length === 0 ? h('div', { className: 'dad-hint' }, '（暂无模块）') : null,
               env.modules.map((m, i) => h(ModuleCard, {
@@ -608,7 +662,7 @@ window.__ModuleLoader__.load({
                 onDelete: () => onDeleteModule(i),
               })),
               h('div', { className: 'dad-row' },
-                h('button', { type: 'button', className: 'dad-btn', onClick: onAddModule }, '+ 添加模块'))),
+                h('button', { type: 'button', className: 'dad-btn', onClick: onAddModule }, '+ 添加模块')))),
             h('div', { className: 'dad-formfoot' },
               h('button', { type: 'button', className: 'dad-btn dad-btn-primary', onClick: onSave }, '保存环境'),
               h('button', { type: 'button', className: 'dad-btn dad-btn-danger', onClick: onDelete }, '删除此环境'),
@@ -740,6 +794,7 @@ window.__ModuleLoader__.load({
       const [loadError, setLoadError] = useState('')
       const [draft, setDraft] = useState(null)
       const [formOpen, setFormOpen] = useState(true)
+      const [formTab, setFormTab] = useState('basic')
       const [formMsg, setFormMsg] = useState(null)
       // 全局提示：导入等不依赖当前选中环境的操作也必须有可见反馈
       const [notice, setNotice] = useState(null)
@@ -923,6 +978,7 @@ window.__ModuleLoader__.load({
       function selectEnv(env) {
         setDraft(normalizeEnv(env))
         setSelected([])
+        setFormTab('basic')
         setFormMsg(null)
       }
       function addEnv() {
@@ -935,6 +991,7 @@ window.__ModuleLoader__.load({
         setDraft(env)
         setSelected([])
         setFormOpen(true)
+        setFormTab('basic')
         setFormMsg({ text: '新环境尚未保存，填写后点击「保存环境」', kind: 'warn' })
       }
       function copyEnv(source) {
@@ -947,6 +1004,7 @@ window.__ModuleLoader__.load({
         setDraft(copy)
         setSelected([])
         setFormOpen(true)
+        setFormTab('basic')
         setFormMsg({ text: '副本尚未保存，点击「保存环境」后写入配置', kind: 'warn' })
       }
       function askDeleteEnv(env) {
@@ -1627,6 +1685,7 @@ window.__ModuleLoader__.load({
                       r.logTail ? h('pre', { className: 'dad-hlog' }, r.logTail) : null)))),
           h(EnvForm, {
             env: draft, isNew, groups, message: formMsg, open: formOpen,
+            tab: formTab, onTab: setFormTab,
             onToggle: () => setFormOpen((v) => !v),
             onPatch: patchEnv, onPatchSsh: patchSsh, onPatchModule: patchModule,
             onAddModule: addModule, onDeleteModule: askDeleteModule,
@@ -1680,7 +1739,14 @@ window.__ModuleLoader__.load({
       '.dad-card{min-width:0;padding:14px 16px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1)}',
       '.dad-card-head{display:flex;align-items:center;gap:8px;min-width:0;margin-bottom:12px}',
       '.dad-card-title{flex:1;min-width:0;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dad-tabs{display:flex;align-items:stretch;gap:2px;min-width:0;margin:0 0 10px;padding:3px;border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-module-platform)}',
+      '.dad-tab{flex:1 1 0;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:0;margin:0;padding:6px 10px;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;white-space:nowrap}',
+      '.dad-tab:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
+      '.dad-tab[aria-selected="true"]{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-weight:600;box-shadow:var(--dsw-elevation-subtle,0 0 0 .5px var(--dsw-alias-border-l3))}',
+      '.dad-tab-count{flex:0 0 auto;min-width:16px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-tertiary);font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;line-height:16px}',
+      '.dad-tab[aria-selected="true"] .dad-tab-count{background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-state-business-primary)}',
       '.dad-sec{padding:12px 14px;margin-bottom:10px;border-radius:var(--dsw-radius-lg);min-width:0;background:var(--dsw-alias-bg-module-platform)}',
+      '.dad-sec[hidden]{display:none}',
       '.dad-sec-title{margin-bottom:10px;font-size:12.5px;font-weight:600;color:var(--dsw-alias-label-secondary)}',
       '.dad-row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;align-items:flex-end;min-width:0}',
       '.dad-row:last-child{margin-bottom:0}',

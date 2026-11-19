@@ -80,8 +80,9 @@ function runStep(label, args, opts = {}) {
 }
 
 // 组装跳板/代理的 ssh 选项（返回 argv token 数组，字段均经校验白名单，无 shell 元字符）。
-// 统一走 ProxyCommand：跳板与目标认证相互独立（跳板仅用密钥/agent——sshpass 无法应答两级密码提示），
-// 且 rsync -e 字符串与 rclone --sftp-ssh 外部命令拿到的是同一条 ssh 命令行，行为一致。
+// 统一走 ProxyCommand：跳板与目标认证相互独立（跳板仅用密钥/agent——sshpass 无法应答两级密码提示）。
+// argv 场景（testSsh/远程命令）直接用本函数返回值；rsync -e 与 rclone --sftp-ssh 是字符串场景，
+// 由 sshProxyShellArg / sshProxyCsvArg 按各自分词规则加引号。
 // socks5/http 依赖 OpenBSD nc（macOS/多数 Linux 自带；不支持代理自身认证）。
 export function sshProxyTokens(t) {
   const type = t?.proxyType || ''
@@ -100,6 +101,25 @@ export function sshProxyTokens(t) {
     return ['-o', `ProxyCommand=nc -X ${type === 'socks5' ? '5' : 'connect'} -x ${host}:${port} %h %p`]
   }
   return []
+}
+
+// 字符串场景的引号包裹（值均为白名单校验字段，不含引号，两种包裹都安全）：
+// rsync -e 命令行经 /bin/sh 执行 → 单引号；rclone --sftp-ssh 经 csv(空格) 解析（rclone fs.SpaceSepList）→ 双引号。
+// 不加引号时，ProxyCommand 值里的空格被拆散，外层 ssh 会把 -W %h:%p 等错当成自己的选项
+// （实测报错：Bad stdio forwarding specification '%h:%p'）。
+export function sshProxyShellArg(t) {
+  const tokens = sshProxyTokens(t)
+  return tokens.length ? `${tokens[0]} '${tokens[1]}'` : ''
+}
+export function sshProxyCsvArg(t) {
+  const tokens = sshProxyTokens(t)
+  return tokens.length ? `${tokens[0]} "${tokens[1]}"` : ''
+}
+
+// rsync -e 的完整 ssh 命令行（目标参数由 rsync 自行追加）：经 /bin/sh 执行，跳板/代理选项须单引号包裹
+export function buildSshBase(t) {
+  const proxy = sshProxyShellArg(t)
+  return `ssh -p ${t.port}${t.keyFile ? ' -i ' + t.keyFile : ''}${proxy ? ' ' + proxy : ''}${t.options ? ' ' + t.options : ''}`
 }
 
 // 测试 SSH 连通性：BatchMode 禁止交互询问（密码仍走 sshpass），10 秒超时；返回 { ok, ms?, error? }
@@ -264,7 +284,7 @@ export function buildRcloneArgs(target, m, local, rclone) {
   if (key) args.push('--sftp-key-file', key)
   // 跳板/代理：rclone 内部 ssh 库不支持 ProxyCommand，改用外部 ssh（--sftp-ssh）。
   // 此时 rclone 忽略内置认证（含 --sftp-pass），外部 ssh 须能免密登录（密钥/agent），故仅允许无密码目标
-  const proxyStr = sshProxyTokens(target).join(' ')
+  const proxyStr = sshProxyCsvArg(target)
   if (proxyStr) {
     // 自定义 options 一并带上，与 rsync 的 sshBase 行为一致（如 StrictHostKeyChecking=no）
     const opts = (target.options || '').trim()
@@ -335,8 +355,7 @@ export async function deployModule(env, m, sshpass, rclone = null) {
     const inst = instances[ii]
     const t = inst.target
     const prefix = instances.length > 1 ? `[${m.name} ${inst.label}]` : `[${m.name}]`
-    const proxyStr = sshProxyTokens(t).join(' ')
-    const sshBase = `ssh -p ${t.port}${t.keyFile ? ' -i ' + t.keyFile : ''}${proxyStr ? ' ' + proxyStr : ''}${t.options ? ' ' + t.options : ''}`
+    const sshBase = buildSshBase(t)
     const dest = `${t.user}@${t.host}`
     // 仅当该实例目标配置了密码才挂 sshpass（避免空 SSHPASS 破坏密钥/agent 认证）
     const usePass = sshpass && t.password
