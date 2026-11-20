@@ -249,13 +249,112 @@ window.__ModuleLoader__.load({
             onClick: onImport,
           }, '导入'),
           h('button', {
-            type: 'button', className: 'dad-btn', title: '导出全部环境配置为 JSON（含 SSH 密码）',
+            type: 'button', className: 'dad-btn', title: '选择要导出的环境，下载为 JSON（含 SSH 密码）',
             onClick: onExport, disabled: envs.length === 0,
           }, '导出'),
           h('button', { type: 'button', className: 'dad-btn dad-btn-primary', onClick: onAdd }, '+ 添加环境')),
         h('div', { className: 'dad-envs' },
           envs.length === 0 ? h('div', { className: 'dad-hint' }, '（暂无环境，点击「+ 添加环境」）') : null,
           nodes))
+    }
+
+    // 保存失败时把服务端错误归到对应页，避免用户停在看不到出错字段的 Tab 上。
+    function saveErrorTarget(text, modules) {
+      const msg = String(text || '')
+      const parts = msg.split('；')
+      let tab = ''
+      let moduleIndex = -1
+      const list = modules || []
+      for (const part of parts) {
+        const piece = part.trim()
+        if (!piece) continue
+        if (!tab) {
+          if (piece.indexOf('SSH 目标') === 0 || piece === '至少需要一个 SSH 目标') tab = 'ssh'
+          else if (piece.indexOf('模块') === 0 || piece === '至少需要一个模块') tab = 'modules'
+          else {
+            const named = list.findIndex((m) => {
+              const name = (m.name || '').trim()
+              const id = (m.id || '').trim()
+              return (name && piece.indexOf(name + ':') === 0) || (id && piece.indexOf(id + ':') === 0)
+            })
+            if (named >= 0) {
+              tab = 'modules'
+              moduleIndex = named
+            }
+          }
+        }
+        if (tab === 'modules' && moduleIndex < 0) {
+          const named = list.findIndex((m) => {
+            const name = (m.name || '').trim()
+            const id = (m.id || '').trim()
+            return (name && piece.indexOf(name + ':') === 0) || (id && piece.indexOf(id + ':') === 0)
+              || (name && piece.indexOf('模块 ' + name) === 0) || (id && piece.indexOf('模块 ' + id) === 0)
+          })
+          if (named >= 0) moduleIndex = named
+        }
+        if (tab && (tab !== 'modules' || moduleIndex >= 0)) break
+      }
+      return { tab: tab || 'basic', moduleIndex }
+    }
+
+    function ModuleTabs({ modules, sshs, index, onIndex, onChange, onDelete, onAdd }) {
+      const list = modules || []
+      const active = list.length ? Math.max(0, Math.min(index || 0, list.length - 1)) : 0
+      const tabListRef = useRef(null)
+      const focusTab = useRef(-1)
+      useEffect(() => {
+        if (focusTab.current !== active) return
+        const root = tabListRef.current
+        const btn = root && root.querySelector('[data-mod="' + active + '"]')
+        focusTab.current = -1
+        if (btn) btn.focus()
+      }, [active])
+      function onKey(ev) {
+        if (!list.length) return
+        if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight' && ev.key !== 'Home' && ev.key !== 'End') return
+        let next = active
+        if (ev.key === 'ArrowLeft') next = (active + list.length - 1) % list.length
+        else if (ev.key === 'ArrowRight') next = (active + 1) % list.length
+        else if (ev.key === 'Home') next = 0
+        else next = list.length - 1
+        ev.preventDefault()
+        focusTab.current = next
+        onIndex(next)
+      }
+      const mod = list[active]
+      return h('div', null,
+        h('div', { className: 'dad-modtabs' },
+          h('div', { className: 'dad-modtablist', role: 'tablist', 'aria-label': '构建 / 发布模块', ref: tabListRef },
+            list.length === 0
+              ? h('span', { className: 'dad-hint' }, '（暂无模块）')
+              : list.map((m, i) => {
+                const selected = i === active
+                const label = (m.name || '').trim() || (m.id || '').trim() || ('模块 ' + (i + 1))
+                return h('button', {
+                  key: i, type: 'button', role: 'tab',
+                  className: 'dad-modtab', 'data-mod': String(i), 'data-off': m.enabled ? '0' : '1',
+                  id: 'dad-mod-tab-' + i,
+                  'aria-selected': selected ? 'true' : 'false',
+                  'aria-controls': 'dad-mod-panel',
+                  tabIndex: selected ? 0 : -1,
+                  title: label + (m.enabled ? '' : '（未启用）'),
+                  onClick: () => onIndex(i),
+                  onKeyDown: onKey,
+                },
+                  h('span', { className: 'dad-modtab-name' }, label),
+                  h('span', { className: 'dad-kindtag' + (m.kind === 'front' || m.kind === 'server' ? ' dad-kind-' + m.kind : '') }, KIND_LABEL[m.kind] || m.kind))
+              })),
+          h('button', { type: 'button', className: 'dad-btn', onClick: onAdd }, '+ 添加模块')),
+        mod
+          ? h('div', {
+            role: 'tabpanel', id: 'dad-mod-panel', 'aria-labelledby': 'dad-mod-tab-' + active,
+          },
+            h(ModuleCard, {
+              mod, sshs,
+              onChange: (field, value) => onChange(active, field, value),
+              onDelete: () => onDelete(active),
+            }))
+          : null)
     }
 
     function ModuleCard({ mod, onChange, onDelete, sshs }) {
@@ -386,7 +485,7 @@ window.__ModuleLoader__.load({
     }
 
     function EnvForm({
-      env, isNew, groups, message, open, tab, onTab, onToggle,
+      env, isNew, groups, message, open, tab, onTab, moduleIndex, onModuleIndex, onToggle,
       onPatch, onPatchSsh, onPatchModule, onAddModule, onDeleteModule,
       onSave, onDelete, onBrowse, onBrowseKey, onBrowseJumpKey,
       onAddSsh, onDeleteSsh, onTestSsh, sshTest,
@@ -400,6 +499,15 @@ window.__ModuleLoader__.load({
       const active = ENV_TABS.some((t) => t.id === tab) ? tab : 'basic'
       const sshCount = sshList.length
       const moduleCount = env ? env.modules.length : 0
+      const tabListRef = useRef(null)
+      const focusTab = useRef('')
+      useEffect(() => {
+        if (!focusTab.current || focusTab.current !== active) return
+        const root = tabListRef.current
+        const btn = root && root.querySelector('[data-tab="' + active + '"]')
+        focusTab.current = ''
+        if (btn) btn.focus()
+      }, [active])
       function tabCount(id) {
         if (id === 'ssh') return sshCount
         if (id === 'modules') return moduleCount
@@ -414,9 +522,8 @@ window.__ModuleLoader__.load({
         else if (ev.key === 'Home') next = 0
         else next = ENV_TABS.length - 1
         ev.preventDefault()
+        focusTab.current = ENV_TABS[next].id
         onTab(ENV_TABS[next].id)
-        const btn = ev.currentTarget.parentElement && ev.currentTarget.parentElement.querySelector('[data-tab="' + ENV_TABS[next].id + '"]')
-        if (btn) btn.focus()
       }
       return h('div', { className: 'dad-card' },
         h('div', { className: 'dad-card-head' },
@@ -431,7 +538,7 @@ window.__ModuleLoader__.load({
         !env
           ? h('div', { className: 'dad-hint' }, '选择或新增一个环境后编辑配置。')
           : (open ? h('div', null,
-            h('div', { className: 'dad-tabs', role: 'tablist', 'aria-label': '环境配置' },
+            h('div', { className: 'dad-tabs', role: 'tablist', 'aria-label': '环境配置', ref: tabListRef },
               ENV_TABS.map((t) => {
                 const selected = t.id === active
                 const count = tabCount(t.id)
@@ -653,16 +760,11 @@ window.__ModuleLoader__.load({
               className: 'dad-sec', role: 'tabpanel', id: 'dad-env-panel-modules',
               'aria-labelledby': 'dad-env-tab-modules', hidden: active !== 'modules',
             },
-              active !== 'modules' ? null : h('div', null,
-              h('div', { className: 'dad-sec-title' }, '构建 / 发布模块'),
-              env.modules.length === 0 ? h('div', { className: 'dad-hint' }, '（暂无模块）') : null,
-              env.modules.map((m, i) => h(ModuleCard, {
-                key: i, mod: m, sshs: sshList,
-                onChange: (field, value) => onPatchModule(i, field, value),
-                onDelete: () => onDeleteModule(i),
+              active !== 'modules' ? null : h(ModuleTabs, {
+                modules: env.modules, sshs: sshList, index: moduleIndex,
+                onIndex: onModuleIndex,
+                onChange: onPatchModule, onDelete: onDeleteModule, onAdd: onAddModule,
               })),
-              h('div', { className: 'dad-row' },
-                h('button', { type: 'button', className: 'dad-btn', onClick: onAddModule }, '+ 添加模块')))),
             h('div', { className: 'dad-formfoot' },
               h('button', { type: 'button', className: 'dad-btn dad-btn-primary', onClick: onSave }, '保存环境'),
               h('button', { type: 'button', className: 'dad-btn dad-btn-danger', onClick: onDelete }, '删除此环境'),
@@ -698,6 +800,74 @@ window.__ModuleLoader__.load({
           }, worktrees.map((w) => h('option', { key: w.path, value: w.path },
             (w.branch || w.head || '?') + ' — ' + w.path)))
           : null)
+    }
+
+    function ExportDialog({ envs, selectedIds, onToggle, onToggleAll, onClose, onConfirm }) {
+      const allOn = envs.length > 0 && selectedIds.length === envs.length
+      const buckets = new Map()
+      const order = []
+      const ungrouped = []
+      for (const e of envs) {
+        const g = (e.group || '').trim()
+        if (!g) { ungrouped.push(e); continue }
+        if (!buckets.has(g)) { buckets.set(g, []); order.push(g) }
+        buckets.get(g).push(e)
+      }
+      const groups = order.map((g) => [g, buckets.get(g)])
+      if (ungrouped.length) groups.push(['未分组', ungrouped])
+      const rows = []
+      for (const [g, list] of groups) {
+        if (groups.length > 1) rows.push(h('div', { key: 'grp:' + g, className: 'dad-grp dad-export-grp' }, g))
+        for (const e of list) {
+          const on = selectedIds.includes(e.id)
+          const sshList = e.sshs || []
+          const ssh = sshList[0] || {}
+          const sshText = ssh.host
+            ? (ssh.user || 'root') + '@' + ssh.host + (sshList.length > 1 ? ' 等 ' + sshList.length + ' 个' : '')
+            : 'SSH 未配置'
+          const modCount = (e.modules || []).length
+          rows.push(h('label', {
+            key: e.id, className: 'dad-opt',
+            'data-sel': on ? '1' : '0',
+          },
+            h('input', {
+              type: 'checkbox', checked: on,
+              onChange: () => onToggle(e.id),
+            }),
+            h('span', { className: 'dad-opt-main' },
+              h('b', { className: 'dad-opt-name' }, e.name || e.id),
+              h('span', { className: 'dad-sub' }, e.id + ' · ' + sshText + ' · ' + modCount + ' 个模块'))))
+        }
+      }
+      return h('div', {
+        className: 'dad-mask', role: 'presentation',
+        onClick: onClose,
+      },
+        h('div', {
+          className: 'dad-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': '导出配置',
+          onClick: (ev) => ev.stopPropagation(),
+        },
+          h('div', { className: 'dad-modal-head' },
+            h('strong', null, '导出配置'),
+            h('span', { className: 'dad-spacer' }),
+            h('button', { type: 'button', className: 'dad-btn', onClick: onClose, 'aria-label': '关闭' }, '×')),
+          h('div', { className: 'dad-modal-body' },
+            h('div', { className: 'dad-modbar' },
+              h('span', { className: 'dad-hint' }, '勾选要导出的环境（含 SSH 密码，请妥善保管）'),
+              h('button', {
+                type: 'button', className: 'dad-btn', onClick: onToggleAll,
+                disabled: envs.length === 0,
+              }, allOn ? '清空' : '全选')),
+            h('div', { className: 'dad-export-list' }, rows)),
+          h('div', { className: 'dad-modal-foot' },
+            h('span', { className: 'dad-hint dad-export-count' }, '已选 ' + selectedIds.length + ' / ' + envs.length),
+            h('span', { className: 'dad-spacer' }),
+            h('button', { type: 'button', className: 'dad-btn', onClick: onClose }, '取消'),
+            h('button', {
+              type: 'button', className: 'dad-btn dad-btn-primary',
+              disabled: selectedIds.length === 0,
+              onClick: onConfirm,
+            }, '导出'))))
     }
 
     function ConfirmDialog({ state, onClose }) {
@@ -795,6 +965,7 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = useState(null)
       const [formOpen, setFormOpen] = useState(true)
       const [formTab, setFormTab] = useState('basic')
+      const [moduleIndex, setModuleIndex] = useState(0)
       const [formMsg, setFormMsg] = useState(null)
       // 全局提示：导入等不依赖当前选中环境的操作也必须有可见反馈
       const [notice, setNotice] = useState(null)
@@ -827,6 +998,8 @@ window.__ModuleLoader__.load({
       const [historyTick, setHistoryTick] = useState(0)
 
       const [confirmState, setConfirmState] = useState(null)
+      const [exportOpen, setExportOpen] = useState(false)
+      const [exportIds, setExportIds] = useState([])
 
       const logRef = useRef(null)
       const esRef = useRef(null)
@@ -865,6 +1038,15 @@ window.__ModuleLoader__.load({
       }, [])
 
       // 全局提示 6 秒后自动消失
+      useEffect(() => {
+        if (!exportOpen) return undefined
+        function onKey(ev) {
+          if (ev.key === 'Escape') setExportOpen(false)
+        }
+        document.addEventListener('keydown', onKey)
+        return () => document.removeEventListener('keydown', onKey)
+      }, [exportOpen])
+
       useEffect(() => {
         if (!notice) return undefined
         const timer = setTimeout(() => setNotice(null), 6000)
@@ -979,6 +1161,7 @@ window.__ModuleLoader__.load({
         setDraft(normalizeEnv(env))
         setSelected([])
         setFormTab('basic')
+        setModuleIndex(0)
         setFormMsg(null)
       }
       function addEnv() {
@@ -992,6 +1175,7 @@ window.__ModuleLoader__.load({
         setSelected([])
         setFormOpen(true)
         setFormTab('basic')
+        setModuleIndex(0)
         setFormMsg({ text: '新环境尚未保存，填写后点击「保存环境」', kind: 'warn' })
       }
       function copyEnv(source) {
@@ -1005,6 +1189,7 @@ window.__ModuleLoader__.load({
         setSelected([])
         setFormOpen(true)
         setFormTab('basic')
+        setModuleIndex(0)
         setFormMsg({ text: '副本尚未保存，点击「保存环境」后写入配置', kind: 'warn' })
       }
       function askDeleteEnv(env) {
@@ -1040,12 +1225,24 @@ window.__ModuleLoader__.load({
 
       // ---------- 导入 / 导出配置 ----------
 
-      // 导出当前环境列表（与 envs.json 同构，可直接用于「导入」；含 SSH 密码）
-      function exportConfig() {
+      // 打开勾选框；默认全选。下载内容与 envs.json 同构，可直接用于「导入」（含 SSH 密码）
+      function openExport() {
         if (!envs.length) return
+        setExportIds(envs.map((e) => e.id))
+        setExportOpen(true)
+      }
+      function toggleExportId(id) {
+        setExportIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : prev.concat(id)))
+      }
+      function toggleExportAll() {
+        setExportIds((prev) => (prev.length === envs.length ? [] : envs.map((e) => e.id)))
+      }
+      function confirmExport() {
+        const picked = envs.filter((e) => exportIds.includes(e.id))
+        if (!picked.length) return
         const d = new Date()
         const date = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
-        const blob = new Blob([JSON.stringify(envs, null, 2)], { type: 'application/json' })
+        const blob = new Blob([JSON.stringify(picked, null, 2)], { type: 'application/json' })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
@@ -1054,7 +1251,8 @@ window.__ModuleLoader__.load({
         a.click()
         a.remove()
         setTimeout(() => URL.revokeObjectURL(url), 1000)
-        setNotice({ text: '已导出 ' + envs.length + ' 个环境（含 SSH 密码，请妥善保管）', kind: 'ok' })
+        setExportOpen(false)
+        setNotice({ text: '已导出 ' + picked.length + ' 个环境（含 SSH 密码，请妥善保管）', kind: 'ok' })
       }
 
       function openImport() {
@@ -1169,7 +1367,12 @@ window.__ModuleLoader__.load({
         })
       }
       function addModule() {
-        setDraft((prev) => (prev ? { ...prev, modules: prev.modules.concat([makeModule(prev.modules)]) } : prev))
+        setDraft((prev) => {
+          if (!prev) return prev
+          const next = prev.modules.concat([makeModule(prev.modules)])
+          setModuleIndex(next.length - 1)
+          return { ...prev, modules: next }
+        })
       }
       function askDeleteModule(index) {
         if (!draft || !draft.modules[index]) return
@@ -1181,6 +1384,7 @@ window.__ModuleLoader__.load({
           confirmLabel: '删除',
           onConfirm: () => setDraft((prev) => {
             if (!prev) return prev
+            setModuleIndex((cur) => Math.max(0, Math.min(cur, prev.modules.length - 2)))
             return { ...prev, modules: prev.modules.filter((_m, i) => i !== index) }
           }),
         })
@@ -1189,8 +1393,13 @@ window.__ModuleLoader__.load({
       function saveEnv() {
         if (!draft) return
         const envIdValue = (draft.id || '').trim()
-        if (!envIdValue) { setFormMsg({ text: 'ID 不能为空', kind: 'err' }); return }
+        if (!envIdValue) {
+          setFormTab('basic')
+          setFormMsg({ text: 'ID 不能为空', kind: 'err' })
+          return
+        }
         if (isNew && envs.some((e) => e.id === envIdValue)) {
+          setFormTab('basic')
           setFormMsg({ text: 'ID「' + envIdValue + '」已被其他环境使用', kind: 'err' })
           return
         }
@@ -1248,7 +1457,11 @@ window.__ModuleLoader__.load({
           setFormOpen(false)
           setFormMsg({ text: (d && d.warning) || '已保存', kind: (d && d.warning) ? 'warn' : 'ok' })
         }).catch((error) => {
-          setFormMsg({ text: (error.message || String(error)), kind: 'err' })
+          const text = error.message || String(error)
+          const target = saveErrorTarget(text, draft.modules)
+          setFormTab(target.tab)
+          if (target.moduleIndex >= 0) setModuleIndex(target.moduleIndex)
+          setFormMsg({ text, kind: 'err' })
         })
       }
 
@@ -1560,7 +1773,7 @@ window.__ModuleLoader__.load({
           envs, lastBuild, draft,
           onSelect: selectEnv, onCopy: copyEnv, onDelete: askDeleteEnv, onAdd: addEnv,
           onImport: openImport,
-          onExport: exportConfig,
+          onExport: openExport,
         }),
         h('div', { className: 'dad-right' },
           h('div', { className: 'dad-title' },
@@ -1628,7 +1841,7 @@ window.__ModuleLoader__.load({
                   },
                     h('span', { className: 'dad-onum' }, String(idx + 1)),
                     h('span', { className: 'dad-oname' }, m.name || m.id),
-                    h('span', { className: 'dad-kindtag' }, KIND_LABEL[m.kind] || '模块'),
+                    h('span', { className: 'dad-kindtag' + (m.kind === 'front' || m.kind === 'server' ? ' dad-kind-' + m.kind : '') }, KIND_LABEL[m.kind] || '模块'),
                     h('button', {
                       type: 'button', className: 'dad-ordel', title: '移除', 'aria-label': '从执行顺序移除',
                       onClick: (ev) => { ev.stopPropagation(); toggleSel(id) },
@@ -1686,6 +1899,7 @@ window.__ModuleLoader__.load({
           h(EnvForm, {
             env: draft, isNew, groups, message: formMsg, open: formOpen,
             tab: formTab, onTab: setFormTab,
+            moduleIndex, onModuleIndex: setModuleIndex,
             onToggle: () => setFormOpen((v) => !v),
             onPatch: patchEnv, onPatchSsh: patchSsh, onPatchModule: patchModule,
             onAddModule: addModule, onDeleteModule: askDeleteModule,
@@ -1696,6 +1910,11 @@ window.__ModuleLoader__.load({
             pms, pmOpen, pmRef, pmErr, onPmFocus: openPm, onPmPick: pickPm,
           })),
         confirmState ? h(ConfirmDialog, { state: confirmState, onClose: () => setConfirmState(null) }) : null,
+        exportOpen ? h(ExportDialog, {
+          envs, selectedIds: exportIds,
+          onToggle: toggleExportId, onToggleAll: toggleExportAll,
+          onClose: () => setExportOpen(false), onConfirm: confirmExport,
+        }) : null,
         browse ? h(BrowseModal, {
           state: browse, onClose: () => setBrowse(null),
           onNavigate: navigateBrowse, onUp: browseUp, onPick: browsePick, onSelectFile: browseSelectFile,
@@ -1740,7 +1959,7 @@ window.__ModuleLoader__.load({
       '.dad-card-head{display:flex;align-items:center;gap:8px;min-width:0;margin-bottom:12px}',
       '.dad-card-title{flex:1;min-width:0;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.dad-tabs{display:flex;align-items:stretch;gap:2px;min-width:0;margin:0 0 10px;padding:3px;border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-module-platform)}',
-      '.dad-tab{flex:1 1 0;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:0;margin:0;padding:6px 10px;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;white-space:nowrap}',
+      '.dad-tab{flex:1 1 0;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:0;margin:0;padding:6px 10px;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;font-weight:500;cursor:pointer}',
       '.dad-tab:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
       '.dad-tab[aria-selected="true"]{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-weight:600;box-shadow:var(--dsw-elevation-subtle,0 0 0 .5px var(--dsw-alias-border-l3))}',
       '.dad-tab-count{flex:0 0 auto;min-width:16px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-tertiary);font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;line-height:16px}',
@@ -1791,7 +2010,14 @@ window.__ModuleLoader__.load({
       '.dad-btn-danger-solid{background:var(--dsw-alias-state-error-primary);border-color:transparent;color:var(--dsw-alias-label-primary-foreground)}',
       '.dad-btn-danger-solid:hover:not(:disabled){background:var(--dsw-alias-state-error-primary)}',
       '.dad-formfoot{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:4px}',
-      '.dad-mcard{position:relative;min-width:0;padding:10px 12px;margin-bottom:10px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-2)}',
+      '.dad-modtabs{display:flex;align-items:flex-end;gap:8px;min-width:0;margin-bottom:10px}',
+      '.dad-modtablist{flex:1 1 auto;display:flex;align-items:stretch;gap:4px;min-width:0;overflow-x:auto;padding-bottom:1px}',
+      '.dad-modtab{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;max-width:220px;min-width:0;margin:0;padding:6px 10px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;cursor:pointer}',
+      '.dad-modtab:hover{border-color:var(--dsw-alias-border-l4);color:var(--dsw-alias-label-primary)}',
+      '.dad-modtab[aria-selected="true"]{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-label-primary);font-weight:600}',
+      '.dad-modtab[data-off="1"]{opacity:.55}',
+      '.dad-modtab-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.dad-mcard{position:relative;min-width:0;padding:12px 14px;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1)}',
       '.dad-sshtarget{position:relative;min-width:0;padding:8px 10px 10px;margin-bottom:8px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1)}',
       '.dad-mcard[data-off="1"]{opacity:.6}',
       '.dad-btndel{position:absolute;top:4px;right:6px;border:0;background:none;color:var(--dsw-alias-label-tertiary);font-size:14px;line-height:1;padding:2px 4px;cursor:pointer}',
@@ -1811,6 +2037,10 @@ window.__ModuleLoader__.load({
       '.dad-gsel{flex:0 0 auto;width:auto;max-width:100%;font-size:12.5px}',
       '.dad-modbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}',
       '.dad-mods{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;min-width:0}',
+      '.dad-export-list{display:flex;flex-direction:column;gap:10px;min-width:0}',
+      '.dad-export-sec{display:flex;flex-direction:column;gap:6px;min-width:0}',
+      '.dad-export-grp{margin:0}',
+      '.dad-export-count{margin:0;align-self:center}',
       '.dad-opt{display:flex;align-items:center;gap:8px;min-width:0;padding:8px 10px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);cursor:pointer}',
       '.dad-opt:hover{border-color:var(--dsw-alias-border-l4);background:var(--dsw-alias-interactive-bg-hover)}',
       '.dad-opt[data-sel="1"]{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-state-business-tertiary)}',
@@ -1828,6 +2058,8 @@ window.__ModuleLoader__.load({
       '.dad-onum{flex:0 0 auto;width:17px;height:17px;border-radius:50%;background:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary-foreground);font-size:10px;display:inline-flex;align-items:center;justify-content:center}',
       '.dad-oname{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}',
       '.dad-kindtag{flex:0 0 auto;font-size:10px;color:var(--dsw-alias-label-tertiary);border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm);padding:0 5px}',
+      '.dad-kind-front{color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-state-business-tertiary)}',
+      '.dad-kind-server{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary);background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 14%,transparent)}',
       '.dad-ordel{flex:0 0 auto;border:0;background:none;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1;padding:0 2px;cursor:pointer}',
       '.dad-ordel:hover{color:var(--dsw-alias-state-error-primary)}',
       '.dad-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px -16px -14px;padding:12px 16px;background:var(--dsw-alias-bg-module-platform);border-radius:0 0 var(--dsw-radius-lg) var(--dsw-radius-lg)}',
