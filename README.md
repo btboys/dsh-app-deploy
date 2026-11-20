@@ -11,7 +11,7 @@
 - **部署面板**：侧边栏「部署」入口，按环境分组管理，模块勾选 + 拖拽排序，一键部署。
 - **实时日志**：SSE 推送 gradle / rsync / ssh 输出，断线按 `Last-Event-ID` 重连回放，绝不重复触发部署。
 - **执行记录**：成功 / 失败 / 中断状态、耗时、失败模块与阶段、日志尾部，最多保留 500 条。
-- **配置导入 / 导出**：JSON 导入时同 ID 覆盖、其余追加、非法配置整体拒绝；导出为同构 JSON（含 SSH 密码）。
+- **配置导入 / 导出**：JSON 导入时同 ID 覆盖、其余追加、非法配置整体拒绝；导出可勾选环境，下载同构 JSON（含 SSH 密码）。
 - **数据本地化**：配置与记录存放在 `~/.dsh/dsh-app-deploy/`，含 SSH 密码，不进包、不进配置 patch。
 
 ## 要求
@@ -33,7 +33,7 @@
 插件发布在 npm，通过 DSH 插件管理器直接安装：
 
 ```text
-plugin_manager → action: install_bundle → target: dsh-app-deploy@0.5.1
+plugin_manager → action: install_bundle → target: dsh-app-deploy@0.6.1
 ```
 
 安装后刷新 DSH Web，左侧导航出现「部署」入口。
