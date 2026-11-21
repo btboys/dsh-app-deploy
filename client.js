@@ -128,6 +128,105 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // ---------- 工作空间关联部署：响应式匹配 ----------
+
+    // 匹配用路径规范化：统一分隔符、去尾分隔符（保留 posix 根 '/'）
+    function normMatchPath(p) {
+      const raw = String(p || '').trim().replace(/\\/g, '/')
+      const s = raw.replace(/\/+$/, '')
+      if (s) return s
+      return raw.startsWith('/') ? '/' : ''
+    }
+    // 当前工作空间 cwd 命中环境 projectPath：相等或 cwd 位于 projectPath 之下
+    function pathMatches(cwd, projectPath) {
+      const a = normMatchPath(cwd)
+      const b = normMatchPath(projectPath)
+      if (!a || !b || !isAbsPath(a) || !isAbsPath(b)) return false
+      return a === b || a.startsWith(b + '/')
+    }
+    // 当前主会话 cwd：SessionListState.byId 中 retainedBy.mainView > 0 的那条
+    function mainCwd(listState) {
+      if (!listState || !listState.byId) return ''
+      const main = Object.values(listState.byId)
+        .find((s) => s && s.retainedBy && (s.retainedBy.mainView || 0) > 0)
+      return (main && main.cwd) || ''
+    }
+
+    // 模块级共享：apply 内创建，Panel  mutations 后就地刷新侧栏直达入口
+    let deployMatch = null
+    function syncDeployEnvs(envs) { if (deployMatch) deployMatch.setEnvs(envs) }
+
+    // 响应式匹配集合：订阅 sessions.list 算当前 cwd（无 RPC），envs 缓存定时/focus/就地刷新
+    function createDeployMatch(ctx) {
+      let envs = []
+      let matched = []
+      let sig = ''
+      let sessionsSub = null
+      const listeners = new Set()
+      const notify = () => { for (const fn of [...listeners]) fn() }
+      const currentCwd = () => {
+        const sessions = ctx.get('sessions')
+        if (!sessions || !sessions.list) return ''
+        return mainCwd(sessions.list.getSnapshot())
+      }
+      const ensureSessions = () => {
+        if (sessionsSub) return
+        const sessions = ctx.get('sessions')
+        if (sessions && sessions.list && sessions.list.subscribe) {
+          sessionsSub = sessions.list.subscribe(recompute)
+        }
+      }
+      const recompute = () => {
+        ensureSessions()
+        const cwd = currentCwd()
+        const next = envs.filter((e) => pathMatches(cwd, e.projectPath))
+        const nextSig = next.map((e) => e.id).join(',')
+        if (nextSig === sig) return
+        sig = nextSig
+        matched = next
+        notify()
+      }
+      const setEnvs = (list) => { envs = Array.isArray(list) ? list : []; recompute() }
+      const refreshEnvs = () => { rpc('config').then((d) => setEnvs(d && d.envs)).catch(() => {}) }
+      ensureSessions()
+      const timer = setInterval(refreshEnvs, 30000)
+      const onFocus = () => refreshEnvs()
+      window.addEventListener('focus', onFocus)
+      refreshEnvs()
+      recompute()
+      return {
+        getSnapshot: () => matched,
+        subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn) },
+        setEnvs,
+        dispose: () => {
+          if (sessionsSub) sessionsSub()
+          clearInterval(timer)
+          window.removeEventListener('focus', onFocus)
+          listeners.clear()
+        },
+      }
+    }
+
+    // ---------- 右栏工作空间部署 tab ----------
+
+    const RB_TAB_ID = 'dsh-app-deploy/rightbar'
+    const RB_KIND = 'dsh-app-deploy'
+    // 直达面板预选环境：取匹配集合第一个（配置顺序）
+    function pickDeployEnvId() {
+      const matched = deployMatch ? deployMatch.getSnapshot() : []
+      return matched.length ? matched[0].id : ''
+    }
+    function deployGuideDesc() {
+      const m = deployMatch ? deployMatch.getSnapshot() : []
+      if (!m.length) return ''
+      if (m.length === 1) return m[0].name || m[0].id
+      return m.length + ' 个环境 · ' + (m[0].name || m[0].id)
+    }
+    // guide 卡片图标（IconProps: size/className）
+    function DeployGuideIcon(props) { return h(Icon, { size: (props && props.size) || 22 }) }
+    // 右栏 tab body：复用完整部署面板，预选匹配环境
+    function DeployTabBody() { return h(Panel, { initialEnvId: pickDeployEnvId() }) }
+
     // ---------- 图标 ----------
 
     function Icon({ size }) {
@@ -957,7 +1056,7 @@ window.__ModuleLoader__.load({
 
     // ---------- 主面板 ----------
 
-    function Panel() {
+    function Panel({ initialEnvId } = {}) {
       const [envs, setEnvs] = useState([])
       const [defProject, setDefProject] = useState('')
       const [lastBuild, setLastBuild] = useState({})
@@ -1024,6 +1123,7 @@ window.__ModuleLoader__.load({
           if (cancelled) return
           const list = Array.isArray(d && d.envs) ? d.envs : []
           setEnvs(list)
+          syncDeployEnvs(list)
           setDefProject((d && d.defaultProjectPath) || '')
           setLastBuild((d && d.lastBuild) || {})
           setDraft((prev) => {
@@ -1031,7 +1131,8 @@ window.__ModuleLoader__.load({
               const match = list.find((e) => e.id === prev.id)
               if (match) return normalizeEnv(match)
             }
-            return list.length ? normalizeEnv(list[0]) : null
+            const pick = (initialEnvId && list.find((e) => e.id === initialEnvId)) || list[0]
+            return pick ? normalizeEnv(pick) : null
           })
         }).catch((error) => { if (!cancelled) setLoadError(error.message || String(error)) })
         return () => { cancelled = true }
@@ -1202,6 +1303,7 @@ window.__ModuleLoader__.load({
             rpc('deleteEnv', { id: env.id }).then((d) => {
               const list = Array.isArray(d && d.envs) ? d.envs : []
               setEnvs(list)
+              syncDeployEnvs(list)
               setSelected([])
               setFormMsg(null)
               setDraft((prev) => {
@@ -1296,6 +1398,7 @@ window.__ModuleLoader__.load({
           const overwritten = Array.isArray(d && d.overwritten) ? d.overwritten : []
           const warning = (d && d.warning) || ''
           setEnvs(next)
+          syncDeployEnvs(next)
           setSelected([])
           const targetId = added[0] || overwritten[0] || ''
           setDraft((prev) => {
@@ -1452,6 +1555,7 @@ window.__ModuleLoader__.load({
         rpc('saveEnv', env).then((d) => {
           const list = Array.isArray(d && d.envs) ? d.envs : []
           setEnvs(list)
+          syncDeployEnvs(list)
           const saved = list.find((x) => x.id === env.id) || env
           setDraft(normalizeEnv(saved))
           setFormOpen(false)
@@ -2107,12 +2211,65 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
+        // 常驻全局「部署」入口（全部环境面板），行为保持不变
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
           name: 'sidebar.panellist', id: 'deploy', label: '部署', order: 45,
         }, Icon))
         ctx.slots.inject('main', () => ctx.slots.register({
           name: 'main', key: 'deploy',
         }, Panel))
+
+        // 工作空间关联部署：响应式匹配集合（先于动态 inject 创建，保证 inject 回调可见）
+        const store = createDeployMatch(ctx)
+        deployMatch = store
+        ctx.effect(() => () => {
+          if (deployMatch === store) deployMatch = null
+          store.dispose()
+        })
+
+        // 右栏 tab body（stage 2）：常驻注册，key = 类型 id；类型未注册时不会渲染
+        ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+          name: 'sidebar.right.pane.tab', key: RB_TAB_ID,
+        }, DeployTabBody))
+
+        // 右栏 guide 卡片（stage 1）：按当前工作空间匹配集合动态注册/注销 tab 类型
+        ctx.effect(() => {
+          const tabsReg = ctx.get('sidebarRightTabs')
+          const sr = ctx.get('sidebarRight')
+          if (!tabsReg || !deployMatch) return () => {}
+          let disposeType = null
+          const closeDeployTabs = () => {
+            if (!sr || !sr.openTabs) return
+            for (const t of sr.openTabs.getSnapshot()) {
+              if (t.kind !== RB_KIND) continue
+              if (typeof sr.closeIn === 'function') sr.closeIn(t.sessionId, t.tabId)
+              else if (sr.mounted && sr.mounted.getSnapshot() === t.sessionId) sr.close(t.tabId)
+            }
+          }
+          const sync = () => {
+            const want = deployMatch.getSnapshot().length > 0
+            if (want && !disposeType) {
+              disposeType = tabsReg.register({
+                id: RB_TAB_ID, kind: RB_KIND, multiple: false, keepMounted: true,
+                title: () => '部署',
+                guide: [{
+                  id: 'deploy', order: 60,
+                  title: () => '部署',
+                  description: deployGuideDesc,
+                  icon: DeployGuideIcon,
+                }],
+              })
+            } else if (!want && disposeType) {
+              // 工作空间不再关联：先关闭已开的部署 tab，再注销类型（guide 卡片随之消失）
+              closeDeployTabs()
+              disposeType()
+              disposeType = null
+            }
+          }
+          const un = deployMatch.subscribe(sync)
+          sync()
+          return () => { un(); if (disposeType) { disposeType(); disposeType = null } }
+        })
       },
     }
   },
