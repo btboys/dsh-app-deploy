@@ -38,10 +38,13 @@
 - description 实时读匹配集合：单环境显示环境名；多环境显示 `N 个环境 · 首环境名`。
 - 点击卡片 → 宿主 `openTab(kind, {replaceTab:true})` 在右栏开部署 tab。
 
-### 4.2 部署 tab
+### 4.2 部署 tab（v3：紧凑视图）
 - 类型：`id='dsh-app-deploy/rightbar'`，`kind='dsh-app-deploy'`，`multiple:false`，`keepMounted:true`。
-- body：`sidebar.right.pane.tab` key=类型 id，渲染完整 `Panel`，`initialEnvId`=匹配集合第一个环境。
-- 面板内可切换环境/编辑/部署；右栏可全屏放大缓解窄栏。
+- body：`sidebar.right.pane.tab` key=类型 id，渲染 `Panel compact`，`initialEnvId`=匹配集合第一个环境。
+- **紧凑模式只显示部署区 + 部署日志**（模块勾选/全选、执行顺序拖拽、执行部署+确认、GitBar/worktree、日志），
+  **不显示**环境列表、环境编辑表单、执行记录、大标题。
+- 匹配到**多个**环境时顶部加环境名切换 tab（`EnvSwitcher`，复用 dad-modtab 样式）；单环境不显示切换。
+- 切换经 `selectEnv` 重置勾选；部署确认弹窗保留。
 
 ### 4.3 响应式与边界
 | 场景 | 行为 |

@@ -224,8 +224,8 @@ window.__ModuleLoader__.load({
     }
     // guide 卡片图标（IconProps: size/className）
     function DeployGuideIcon(props) { return h(Icon, { size: (props && props.size) || 22 }) }
-    // 右栏 tab body：复用完整部署面板，预选匹配环境
-    function DeployTabBody() { return h(Panel, { initialEnvId: pickDeployEnvId() }) }
+    // 右栏 tab body：紧凑部署视图（仅部署区+日志），预选匹配环境
+    function DeployTabBody() { return h(Panel, { initialEnvId: pickDeployEnvId(), compact: true }) }
 
     // ---------- 图标 ----------
 
@@ -1056,7 +1056,19 @@ window.__ModuleLoader__.load({
 
     // ---------- 主面板 ----------
 
-    function Panel({ initialEnvId } = {}) {
+    // 紧凑模式顶部环境切换（仅匹配到多个环境时显示）
+    function EnvSwitcher({ envs, activeId, onPick }) {
+      if (!envs || envs.length < 2) return null
+      return h('div', { className: 'dad-modtabs' },
+        h('div', { className: 'dad-modtablist', role: 'tablist', 'aria-label': '切换部署环境' },
+          envs.map((e) => h('button', {
+            key: e.id, type: 'button', role: 'tab', className: 'dad-modtab',
+            'aria-selected': e.id === activeId ? 'true' : 'false',
+            onClick: () => onPick(e),
+          }, h('span', { className: 'dad-modtab-name' }, e.name || e.id)))))
+    }
+
+    function Panel({ initialEnvId, compact } = {}) {
       const [envs, setEnvs] = useState([])
       const [defProject, setDefProject] = useState('')
       const [lastBuild, setLastBuild] = useState({})
@@ -1115,6 +1127,8 @@ window.__ModuleLoader__.load({
       const enabledModules = draft ? draft.modules.filter((m) => m.enabled) : []
       const moduleById = {}
       if (draft) for (const m of draft.modules) moduleById[m.id] = m
+      // 紧凑模式：顶部切换仅限当前工作空间匹配到的环境
+      const switchEnvs = compact && deployMatch ? deployMatch.getSnapshot() : []
 
       // 首次加载配置；之后只刷新最后构建时间
       useEffect(() => {
@@ -1873,18 +1887,20 @@ window.__ModuleLoader__.load({
             type: 'button', className: 'dad-notice-close', 'aria-label': '关闭提示',
             onClick: () => setNotice(null),
           }, '×')) : null,
-        h(EnvList, {
+        compact ? null : h(EnvList, {
           envs, lastBuild, draft,
           onSelect: selectEnv, onCopy: copyEnv, onDelete: askDeleteEnv, onAdd: addEnv,
           onImport: openImport,
           onExport: openExport,
         }),
         h('div', { className: 'dad-right' },
-          h('div', { className: 'dad-title' },
-            h('h1', { className: 'dad-h1' }, draft ? (draft.name || '未命名环境') : '部署'),
-            h('p', { className: 'dad-title-sub' },
-              titleDot ? h('i', { className: 'dad-dot st-' + titleDot, 'aria-hidden': true }) : null,
-              titleSub)),
+          compact
+            ? h(EnvSwitcher, { envs: switchEnvs, activeId: draft && draft.id, onPick: selectEnv })
+            : h('div', { className: 'dad-title' },
+              h('h1', { className: 'dad-h1' }, draft ? (draft.name || '未命名环境') : '部署'),
+              h('p', { className: 'dad-title-sub' },
+                titleDot ? h('i', { className: 'dad-dot st-' + titleDot, 'aria-hidden': true }) : null,
+                titleSub)),
           h('div', { className: 'dad-card' },
             h('div', { className: 'dad-card-head' },
               h('span', { className: 'dad-card-title' }, '部署')),
@@ -1974,7 +1990,7 @@ window.__ModuleLoader__.load({
                 : null),
             h('pre', { className: 'dad-log', ref: logRef },
               logText || (deployState.running ? '等待日志…' : (history[0] && history[0].logTail) || '（尚未执行）'))),
-          h('div', { className: 'dad-card' },
+          compact ? null : h('div', { className: 'dad-card' },
             h('div', { className: 'dad-card-head' },
               h('span', { className: 'dad-card-title' }, '执行记录'),
               h('button', {
@@ -2000,7 +2016,7 @@ window.__ModuleLoader__.load({
                             + ' (exit ' + r.exitCode + ')')
                           : null),
                       r.logTail ? h('pre', { className: 'dad-hlog' }, r.logTail) : null)))),
-          h(EnvForm, {
+          compact ? null : h(EnvForm, {
             env: draft, isNew, groups, message: formMsg, open: formOpen,
             tab: formTab, onTab: setFormTab,
             moduleIndex, onModuleIndex: setModuleIndex,
